@@ -111,7 +111,7 @@ class EvChargeCard extends HTMLElement {
         .map(r => ({
           validFrom: new Date(r.start),
           validTo:   new Date(r.end),
-          price:     Number(r.value_inc_vat),
+          price:     Number(r.value_inc_vat) * 100,
         }));
 
     const todayRates = normalise(
