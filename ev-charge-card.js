@@ -324,10 +324,12 @@ class EvChargeCard extends HTMLElement {
     heading.textContent = 'RECOMMENDED WINDOWS';
     container.appendChild(heading);
 
+    const allDates = runs.map(run => _fmtSlotDate(run[0].validFrom));
+    const showDates = new Set(allDates).size > 1;
     let prevDateLabel = '';
     runs.forEach(run => {
-      container.appendChild(this._buildRunRow(run, prevDateLabel, charger_kw));
-      prevDateLabel = _formatDate(run[0].validFrom);
+      container.appendChild(this._buildRunRow(run, prevDateLabel, charger_kw, showDates));
+      prevDateLabel = _fmtSlotDate(run[0].validFrom);
     });
 
     skippedRuns.forEach(grp => {
@@ -350,16 +352,16 @@ class EvChargeCard extends HTMLElement {
     return container;
   }
 
-  _buildRunRow(run, prevDateLabel, chargerKw) {
+  _buildRunRow(run, prevDateLabel, chargerKw, showDates) {
     const runStart  = run[0].validFrom;
     const runEnd    = run[run.length - 1].validTo;
     const runCost   = run.reduce((s, r) => s + r.price * chargerKw * 0.5, 0) / 100;
-    const dateLabel = _formatDate(runStart);
+    const dateLabel = _fmtSlotDate(runStart);
 
     const row = _el('div', 'run');
 
     const dateEl = _el('span', 'run-date');
-    dateEl.textContent = dateLabel !== prevDateLabel ? dateLabel : '';
+    dateEl.textContent = (showDates && dateLabel !== prevDateLabel) ? dateLabel : '';
     row.appendChild(dateEl);
 
     const timeEl = _el('span', 'run-time');
@@ -451,6 +453,10 @@ function _formatDate(date) {
   tomorrow.setDate(today.getDate() + 1);
   if (date.toDateString() === today.toDateString())    return 'Tonight';
   if (date.toDateString() === tomorrow.toDateString()) return 'Tomorrow';
+  return date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+function _fmtSlotDate(date) {
   return date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
