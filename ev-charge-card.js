@@ -380,11 +380,27 @@ class EvChargeCard extends HTMLElement {
   }
 
   _buildGreenAdvice(forecast, tonightScore) {
-    const betterNight = forecast.slice(1).find(n => n.greenness_score >= tonightScore + 20);
-    if (!betterNight) return null;
+    if (!forecast.length || tonightScore === 0) return null;
+
     const el = _el('div', 'gn-advice');
-    el.textContent = `${_formatDate(new Date(betterNight.start))} is forecast greener (${betterNight.greenness_score}/100) — charging may be cheaper then.`;
-    return el;
+
+    if (tonightScore >= 60) {
+      el.textContent = 'Tonight is forecast very green — overnight rates are likely to be lower than the current window. Consider waiting to charge tonight.';
+      return el;
+    }
+
+    if (tonightScore < 40) {
+      const betterNight = forecast.slice(1).find(n => n.greenness_score >= 60);
+      let msg = "Tonight's greenness forecast is low, so waiting overnight may not save much.";
+      if (betterNight) {
+        msg += ` The best upcoming forecast is ${_formatDate(new Date(betterNight.start))} (${betterNight.greenness_score}/100).`;
+      }
+      el.textContent = msg;
+      return el;
+    }
+
+    // Medium (40–59): no advice
+    return null;
   }
 
   // ── State change detection ────────────────────────────────────────────────
