@@ -23,7 +23,12 @@
 
 const CARD_CSS = `
   :host { display: block; }
-  ha-card { padding: 16px; font-family: var(--paper-font-body1_-_font-family, sans-serif); color: var(--primary-text-color); }
+  ha-card {
+    padding: 16px;
+    font-family: var(--paper-font-body1_-_font-family, sans-serif);
+    font-size: var(--paper-font-body1_-_font-size, 14px);
+    color: var(--primary-text-color);
+  }
   .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
   .title { font-size: 1.1em; font-weight: 500; }
   .header-right { display: flex; align-items: center; gap: 8px; }
@@ -33,33 +38,31 @@ const CARD_CSS = `
     border-radius: 4px; line-height: 1;
   }
   .refresh-btn:hover { color: var(--primary-color); background: var(--secondary-background-color); }
-  .header-green-bar { width: 80px; height: 8px; background: var(--divider-color); border-radius: 4px; overflow: hidden; }
-  .header-green-fill { height: 100%; border-radius: 4px; }
   hr { border: none; border-top: 1px solid var(--divider-color); margin: 12px 0; }
-  .soc-line { font-size: 1.05em; font-weight: 500; margin-bottom: 2px; }
-  .detail-line { color: var(--secondary-text-color); font-size: 0.9em; margin-bottom: 2px; }
-  .plug-line { font-size: 0.9em; }
+  .soc-line { font-weight: 500; margin-bottom: 2px; }
+  .detail-line { color: var(--secondary-text-color); font-size: var(--paper-font-caption_-_font-size, 12px); margin-bottom: 2px; }
+  .plug-line { }
   .plug-plugged { color: var(--success-color, #4CAF50); }
   .plug-unplugged { color: var(--warning-color, #FF9800); }
   .plug-unknown { color: var(--secondary-text-color); }
   .section-title {
-    font-size: 0.72em; font-weight: 600; color: var(--secondary-text-color);
+    font-size: var(--paper-font-caption_-_font-size, 12px); font-weight: 600; color: var(--secondary-text-color);
     letter-spacing: 0.06em; text-transform: uppercase; margin: 12px 0 6px;
   }
   .run {
     display: grid; grid-template-columns: 72px 1fr auto auto;
-    gap: 8px; align-items: center; font-size: 0.9em; margin-bottom: 4px;
+    gap: 8px; align-items: center; margin-bottom: 4px;
   }
-  .run-date { color: var(--secondary-text-color); font-size: 0.85em; }
+  .run-date { color: var(--secondary-text-color); font-size: var(--paper-font-caption_-_font-size, 12px); }
   .run-price { color: var(--secondary-text-color); text-align: right; }
   .run-cost { font-weight: 500; min-width: 36px; text-align: right; }
-  .skipped { font-size: 0.85em; color: var(--warning-color, #FF9800); margin: 2px 0; }
+  .skipped { font-size: var(--paper-font-caption_-_font-size, 12px); color: var(--warning-color, #FF9800); margin: 2px 0; }
   .total-cost { font-weight: 500; margin-top: 8px; }
-  .saving { font-size: 0.85em; color: var(--secondary-text-color); margin-top: 2px; }
-  .status-ok { color: var(--success-color, #4CAF50); font-size: 0.9em; font-style: italic; padding: 4px 0; }
-  .status-warn { color: var(--warning-color, #FF9800); font-size: 0.9em; padding: 4px 0; }
-  .status-muted { color: var(--secondary-text-color); font-size: 0.9em; padding: 4px 0; }
-  .gn-advice { font-size: 0.85em; color: var(--secondary-text-color); font-style: italic; padding: 4px 0; }
+  .saving { font-size: var(--paper-font-caption_-_font-size, 12px); color: var(--secondary-text-color); margin-top: 2px; }
+  .status-ok { color: var(--success-color, #4CAF50); font-style: italic; padding: 4px 0; }
+  .status-warn { color: var(--warning-color, #FF9800); padding: 4px 0; }
+  .status-muted { color: var(--secondary-text-color); padding: 4px 0; }
+  .gn-advice { font-size: var(--paper-font-caption_-_font-size, 12px); color: var(--secondary-text-color); font-style: italic; padding: 4px 0; }
 `;
 
 class EvChargeCard extends HTMLElement {
@@ -223,7 +226,7 @@ class EvChargeCard extends HTMLElement {
     this.shadowRoot.appendChild(styleEl);
 
     const card = document.createElement('ha-card');
-    card.appendChild(this._buildHeader(tonightScore, tonightEntry));
+    card.appendChild(this._buildHeader());
     card.appendChild(_hr());
     card.appendChild(this._buildSummary(plan));
     card.appendChild(_hr());
@@ -236,7 +239,7 @@ class EvChargeCard extends HTMLElement {
     this.shadowRoot.appendChild(card);
   }
 
-  _buildHeader(tonightScore, tonightEntry) {
+  _buildHeader() {
     const header = _el('div', 'header');
 
     const title = _el('span', 'title');
@@ -253,17 +256,6 @@ class EvChargeCard extends HTMLElement {
       this._render();
     });
     right.appendChild(btn);
-
-    if (tonightScore > 0) {
-      const cat  = _greennessCategory(tonightScore);
-      const bar  = _el('div', 'header-green-bar');
-      bar.title  = `Tonight: ${tonightScore}/100 ${tonightEntry?.greenness_index ?? ''}`;
-      const fill = _el('div', 'header-green-fill');
-      fill.style.width      = `${tonightScore}%`;
-      fill.style.background = cat.color;
-      bar.appendChild(fill);
-      right.appendChild(bar);
-    }
 
     header.appendChild(right);
     return header;
@@ -324,11 +316,9 @@ class EvChargeCard extends HTMLElement {
     heading.textContent = 'RECOMMENDED WINDOWS';
     container.appendChild(heading);
 
-    const allDates = runs.map(run => _fmtSlotDate(run[0].validFrom));
-    const showDates = new Set(allDates).size > 1;
     let prevDateLabel = '';
     runs.forEach(run => {
-      container.appendChild(this._buildRunRow(run, prevDateLabel, charger_kw, showDates));
+      container.appendChild(this._buildRunRow(run, prevDateLabel, charger_kw));
       prevDateLabel = _fmtSlotDate(run[0].validFrom);
     });
 
@@ -352,7 +342,7 @@ class EvChargeCard extends HTMLElement {
     return container;
   }
 
-  _buildRunRow(run, prevDateLabel, chargerKw, showDates) {
+  _buildRunRow(run, prevDateLabel, chargerKw) {
     const runStart  = run[0].validFrom;
     const runEnd    = run[run.length - 1].validTo;
     const runCost   = run.reduce((s, r) => s + r.price * chargerKw * 0.5, 0) / 100;
@@ -361,7 +351,7 @@ class EvChargeCard extends HTMLElement {
     const row = _el('div', 'run');
 
     const dateEl = _el('span', 'run-date');
-    dateEl.textContent = (showDates && dateLabel !== prevDateLabel) ? dateLabel : '';
+    dateEl.textContent = dateLabel !== prevDateLabel ? dateLabel : '';
     row.appendChild(dateEl);
 
     const timeEl = _el('span', 'run-time');
@@ -385,7 +375,7 @@ class EvChargeCard extends HTMLElement {
     const el = _el('div', 'gn-advice');
 
     if (tonightScore >= 60) {
-      el.textContent = 'Tonight is forecast very green — overnight rates are likely to be lower than the current window. Consider waiting to charge tonight.';
+      el.textContent = 'Tonight is forecast very green — overnight rates could be lower than the current window. Consider waiting to charge tonight.';
       return el;
     }
 
@@ -393,13 +383,13 @@ class EvChargeCard extends HTMLElement {
       const betterNight = forecast.slice(1).find(n => n.greenness_score >= 60);
       let msg = "Tonight's greenness forecast is low, so waiting overnight may not save much.";
       if (betterNight) {
-        msg += ` The best upcoming forecast is ${_formatDate(new Date(betterNight.start))} (${betterNight.greenness_score}/100).`;
+        msg += ` The best upcoming greenness forecast is ${_formatDate(new Date(betterNight.start))} (${betterNight.greenness_score}/100).`;
       }
       el.textContent = msg;
       return el;
     }
 
-    // Medium (40–59): no advice
+    // Medium (41–60): no advice
     return null;
   }
 
