@@ -15,9 +15,7 @@
  *   charger_kw: 3.7                       # optional, default 3.7
  *   split_threshold: 1.0                  # optional, default 1.0 p/kWh
  *   min_per_pct: 13.5                     # optional, default 13.5 min per 1%
- *
- * Plug state: the card checks for state === 'CHARGING_CABLE_LOCKED'. Adjust if your
- * integration uses a different string.
+ *   plug_state_value: CHARGING_CABLE_LOCKED  # optional, default CHARGING_CABLE_LOCKED
  */
 
 
@@ -87,6 +85,7 @@ class EvChargeCard extends HTMLElement {
       entity_current_soc:        config.entity_current_soc        || null,
       entity_target_soc:         config.entity_target_soc         || null,
       entity_plug_state:         config.entity_plug_state         || null,
+      plug_state_value:          config.plug_state_value          || 'CHARGING_CABLE_LOCKED',
       entity_greenness_forecast: config.entity_greenness_forecast || null,
     };
   }
@@ -186,7 +185,7 @@ class EvChargeCard extends HTMLElement {
     if (!this._config || !this._hass) return;
 
     const { entity_current_day_rates, entity_current_soc, entity_target_soc,
-            entity_plug_state, entity_greenness_forecast, charger_kw, min_per_pct } = this._config;
+            entity_plug_state, plug_state_value, entity_greenness_forecast, charger_kw, min_per_pct } = this._config;
 
     const rates = this._readRates();
 
@@ -199,7 +198,7 @@ class EvChargeCard extends HTMLElement {
     const plugStateVal = entity_plug_state
       ? (this._hass.states[entity_plug_state]?.state ?? 'unknown')
       : 'unknown';
-    const isPlugged    = plugStateVal === 'CHARGING_CABLE_LOCKED';
+    const isPlugged    = plugStateVal === plug_state_value;
 
     const pctToAdd     = Math.max(0, targetSoc - currentSoc);
     const timeNeeded   = pctToAdd * min_per_pct;
@@ -481,6 +480,7 @@ EvChargeCard.getStubConfig = () => ({
   entity_current_soc:        'sensor.my_ev_battery_soc',
   entity_target_soc:         'sensor.my_ev_target_soc',
   entity_plug_state:         'sensor.my_ev_plug_state',
+  plug_state_value:          'CHARGING_CABLE_LOCKED',
   entity_greenness_forecast: 'sensor.octopus_energy_a_XXXX_greenness_forecast_current_index',
   charger_kw:                3.7,
   split_threshold:           1.0,
