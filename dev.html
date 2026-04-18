@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EV Charge Card – Dev Preview</title>
   <style>
-    /* Approximate Home Assistant CSS variables */
+    /* Home Assistant CSS variables – light theme defaults */
     :root {
+      /* Colours */
       --primary-text-color: #212121;
       --secondary-text-color: #727272;
       --primary-color: #03a9f4;
@@ -15,9 +16,18 @@
       --error-color: #f44336;
       --divider-color: #e0e0e0;
       --secondary-background-color: #f5f5f5;
-      --paper-font-body1_-_font-family: Roboto, sans-serif;
-      --paper-font-body1_-_font-size: 14px;
-      --paper-font-caption_-_font-size: 12px;
+
+      /* Typography */
+      --ha-font-family-body: Roboto, sans-serif;
+      --ha-font-size-xs: 10px;
+      --ha-font-size-s:  12px;
+      --ha-font-size-m:  14px;
+      --ha-font-size-l:  16px;
+      --ha-font-size-xl: 18px;
+
+      /* Card header */
+      --ha-card-header-font-size: 24px;
+      --ha-card-header-color: var(--primary-text-color);
     }
     body {
       background: #f0f2f5;
