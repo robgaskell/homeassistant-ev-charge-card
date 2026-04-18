@@ -115,12 +115,10 @@
 
   // ── Greenness forecast generator ─────────────────────────────────────────────
   function generateForecast(tonightScore) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
     const scores = [tonightScore, 55, 72, 38, 65, 48, 80];
     const labels = ['VERY_GREEN', 'MEDIUM', 'VERY_GREEN', 'LOW', 'VERY_GREEN', 'MEDIUM', 'VERY_GREEN'];
     return scores.map((score, i) => {
-      const d = new Date(today.getTime() + i * 86400000);
+      const d = new Date(todayMidnight.getTime() + i * 86400000);
       return {
         start:           d.toISOString(),
         end:             new Date(d.getTime() + 86400000).toISOString(),

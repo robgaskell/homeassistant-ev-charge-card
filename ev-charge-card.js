@@ -41,7 +41,6 @@ const CARD_CSS = `
   hr { border: none; border-top: 1px solid var(--divider-color); margin: 12px 0; }
   .soc-line { font-weight: 500; margin-bottom: 2px; }
   .detail-line { color: var(--secondary-text-color); font-size: var(--paper-font-caption_-_font-size, 12px); margin-bottom: 2px; }
-  .plug-line { }
   .plug-plugged { color: var(--success-color, #4CAF50); }
   .plug-unplugged { color: var(--warning-color, #FF9800); }
   .plug-unknown { color: var(--secondary-text-color); }
@@ -310,7 +309,6 @@ class EvChargeCard extends HTMLElement {
     }
 
     const { runs, skippedRuns, useSplit, totalCost, consecCost } = schedule;
-    const { charger_kw } = this._config;
 
     const heading = _el('div', 'section-title');
     heading.textContent = 'RECOMMENDED WINDOWS';
@@ -318,7 +316,7 @@ class EvChargeCard extends HTMLElement {
 
     let prevDateLabel = '';
     runs.forEach(run => {
-      container.appendChild(this._buildRunRow(run, prevDateLabel, charger_kw));
+      container.appendChild(this._buildRunRow(run, prevDateLabel));
       prevDateLabel = _fmtSlotDate(run[0].validFrom);
     });
 
@@ -342,10 +340,11 @@ class EvChargeCard extends HTMLElement {
     return container;
   }
 
-  _buildRunRow(run, prevDateLabel, chargerKw) {
+  _buildRunRow(run, prevDateLabel) {
+    const { charger_kw } = this._config;
     const runStart  = run[0].validFrom;
     const runEnd    = run[run.length - 1].validTo;
-    const runCost   = run.reduce((s, r) => s + r.price * chargerKw * 0.5, 0) / 100;
+    const runCost   = run.reduce((s, r) => s + r.price * charger_kw * 0.5, 0) / 100;
     const dateLabel = _fmtSlotDate(runStart);
 
     const row = _el('div', 'run');
@@ -370,7 +369,7 @@ class EvChargeCard extends HTMLElement {
   }
 
   _buildGreenAdvice(forecast, tonightScore) {
-    if (!forecast.length || tonightScore === 0) return null;
+    if (!forecast.length) return null;
 
     const el = _el('div', 'gn-advice');
 
@@ -442,12 +441,6 @@ function _groupIntoRuns(slots) {
   return runs;
 }
 
-function _greennessCategory(score) {
-  if (score >= 60) return { color: 'ForestGreen' };
-  if (score >= 40) return { color: 'MediumSeaGreen' };
-  if (score >= 20) return { color: 'orange' };
-  return             { color: 'tomato' };
-}
 
 function _fmtTime(date) {
   return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
