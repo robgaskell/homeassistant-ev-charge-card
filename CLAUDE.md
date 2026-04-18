@@ -25,7 +25,8 @@ The entire card lives in one file with two sections:
 **`CARD_CSS`** — all styles as a single template literal injected into the Shadow DOM.
 
 **`EvChargeCard` class** (extends `HTMLElement`, registered as `custom:ev-charge-card`):
-- `setConfig()` / `set hass()` — HA lifecycle entry points. `set hass` only re-renders when `_stateKey()` changes, avoiding unnecessary DOM rebuilds.
+- `setConfig()` / `get hass()` / `set hass()` — HA lifecycle entry points. `set hass` only re-renders when `_stateKey()` changes, avoiding unnecessary DOM rebuilds. The getter is required so HA can read the property back.
+- `getCardSize()` / `static getStubConfig()` — HA card picker hooks; `getStubConfig` provides default config for the visual editor.
 - `_readRates()` — reads `rates` attributes from the two Octopus Energy event entities, normalises price from £/kWh → p/kWh (`* 100`), merges and deduplicates by `validFrom` timestamp.
 - `_calculateSchedule()` — core algorithm: evaluates a *consecutive* block (sliding window) vs a *split* strategy (N cheapest slots, sorted chronologically). Uses split only when it saves more than `split_threshold` p/kWh over consecutive. Returns `runs`, `skippedRuns`, costs, and `useSplit` flag.
 - `_render()` and `_build*` methods — imperative DOM construction; `_render()` calls `shadowRoot.replaceChildren()` and rebuilds the full card on each state change.
@@ -43,3 +44,7 @@ Rate slots (after normalisation):
 Runs (output of `_groupIntoRuns`): consecutive slots grouped into arrays; gaps > 60 s start a new run.
 
 The `forecast` array from the greenness entity is filtered to future entries and capped at 7; `tonightScore` is matched by `toDateString()` equality.
+
+## Registration
+
+At the bottom of the file, `customElements.define` is guarded with `customElements.get()` to prevent double-registration errors if the script is loaded more than once (e.g. HACS hot-reload). `window.customCards` registers the card with the HA UI picker, including `preview: true` so the picker can show a live preview.

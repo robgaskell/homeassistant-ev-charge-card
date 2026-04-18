@@ -90,6 +90,8 @@ class EvChargeCard extends HTMLElement {
     };
   }
 
+  get hass() { return this._hass; }
+
   set hass(hass) {
     this._hass = hass;
     const key = this._stateKey(hass);
@@ -100,6 +102,21 @@ class EvChargeCard extends HTMLElement {
   }
 
   getCardSize() { return 5; }
+
+  static getStubConfig() {
+    return {
+      entity_current_day_rates:  'event.octopus_energy_electricity_XXXX_current_day_rates',
+      entity_next_day_rates:     'event.octopus_energy_electricity_XXXX_next_day_rates',
+      entity_current_soc:        'sensor.my_ev_battery_soc',
+      entity_target_soc:         'sensor.my_ev_target_soc',
+      entity_plug_state:         'sensor.my_ev_plug_state',
+      plug_state_value:          'CHARGING_CABLE_LOCKED',
+      entity_greenness_forecast: 'sensor.octopus_energy_a_XXXX_greenness_forecast_current_index',
+      charger_kw:                3.7,
+      split_threshold:           1.0,
+      min_per_pct:               13.5,
+    };
+  }
 
   // ── Data fetching ─────────────────────────────────────────────────────────
 
@@ -465,24 +482,14 @@ function _fmtDuration(minutes) {
 }
 
 
-customElements.define('ev-charge-card', EvChargeCard);
+if (!customElements.get('ev-charge-card')) {
+  customElements.define('ev-charge-card', EvChargeCard);
+}
 
 window.customCards = window.customCards || [];
 window.customCards.push({
   type:        'ev-charge-card',
   name:        'EV Charge Planner',
   description: 'Schedules EV charging using Octopus Agile half-hourly rates.',
-});
-
-EvChargeCard.getStubConfig = () => ({
-  entity_current_day_rates:  'event.octopus_energy_electricity_XXXX_current_day_rates',
-  entity_next_day_rates:     'event.octopus_energy_electricity_XXXX_next_day_rates',
-  entity_current_soc:        'sensor.my_ev_battery_soc',
-  entity_target_soc:         'sensor.my_ev_target_soc',
-  entity_plug_state:         'sensor.my_ev_plug_state',
-  plug_state_value:          'CHARGING_CABLE_LOCKED',
-  entity_greenness_forecast: 'sensor.octopus_energy_a_XXXX_greenness_forecast_current_index',
-  charger_kw:                3.7,
-  split_threshold:           1.0,
-  min_per_pct:               13.5,
+  preview:     true,
 });
