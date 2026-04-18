@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EV Charge Card – Dev Preview</title>
+  <style>
+    /* Approximate Home Assistant CSS variables */
+    :root {
+      --primary-text-color: #212121;
+      --secondary-text-color: #727272;
+      --primary-color: #03a9f4;
+      --success-color: #4caf50;
+      --warning-color: #ff9800;
+      --error-color: #f44336;
+      --divider-color: #e0e0e0;
+      --secondary-background-color: #f5f5f5;
+      --paper-font-body1_-_font-family: Roboto, sans-serif;
+      --paper-font-body1_-_font-size: 14px;
+      --paper-font-caption_-_font-size: 12px;
+    }
+    body {
+      background: #f0f2f5;
+      font-family: Roboto, sans-serif;
+      display: flex;
+      justify-content: center;
+      padding: 32px 16px;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .scenario {
+      width: 380px;
+    }
+    .scenario-label {
+      font-size: 0.75em;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #727272;
+      margin-bottom: 6px;
+    }
+    /* ha-card shim */
+    ha-card {
+      display: block;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,.15);
+    }
+  </style>
+</head>
+<body>
+
+<div class="scenario">
+  <div class="scenario-label">Full data (SOC 42→80%, plugged in, green tonight)</div>
+  <ev-charge-card id="card-full"></ev-charge-card>
+</div>
+
+<div class="scenario">
+  <div class="scenario-label">No optional entities (rates only)</div>
+  <ev-charge-card id="card-minimal"></ev-charge-card>
+</div>
+
+<div class="scenario">
+  <div class="scenario-label">Battery already at target</div>
+  <ev-charge-card id="card-full-soc"></ev-charge-card>
+</div>
+
+<div class="scenario">
+  <div class="scenario-label">Low greenness tonight</div>
+  <ev-charge-card id="card-low-green"></ev-charge-card>
+</div>
+
+<script>
+  // ── ha-card shim ────────────────────────────────────────────────────────────
+  // HA's ha-card is a Polymer element; we register a plain shim so the card renders.
+  customElements.define('ha-card', class extends HTMLElement {});
+</script>
+
+<script src="ev-charge-card.js"></script>
+
+<script>
+  // ── Rate generator ───────────────────────────────────────────────────────────
+  // Generates realistic Octopus Agile half-hourly slots.
+  // Prices (£/kWh) follow a typical daily curve: cheap overnight, peak morning/evening.
+  function generateRates(dateStart, slots = 48) {
+    const rates = [];
+    const baseDate = new Date(dateStart);
+    baseDate.setMinutes(0, 0, 0);
+
+    // Typical Agile price curve by half-hour index (0 = 00:00, 33 = 16:30, etc.)
+    const curve = [
+      0.08, 0.07, 0.06, 0.06, 0.05, 0.05, // 00:00–02:30  cheap overnight
+      0.06, 0.07, 0.09, 0.12, 0.18, 0.22, // 03:00–05:30  early rise
+      0.25, 0.28, 0.30, 0.28, 0.24, 0.20, // 06:00–08:30  morning peak
+      0.16, 0.14, 0.13, 0.12, 0.11, 0.11, // 09:00–11:30  mid-morning
+      0.10, 0.10, 0.11, 0.12, 0.13, 0.14, // 12:00–14:30  midday
+      0.16, 0.18, 0.22, 0.29, 0.34, 0.38, // 15:00–17:30  evening ramp
+      0.35, 0.30, 0.24, 0.18, 0.15, 0.12, // 18:00–20:30  evening peak tapering
+      0.10, 0.09, 0.08, 0.08, 0.07, 0.07, // 21:00–23:30  late night
+    ];
+
+    for (let i = 0; i < slots; i++) {
+      const start = new Date(baseDate.getTime() + i * 30 * 60 * 1000);
+      const end   = new Date(start.getTime() + 30 * 60 * 1000);
+      // Add a little noise so slots aren't identical
+      const noise = (Math.sin(i * 7.3) * 0.008);
+      rates.push({
+        start:         start.toISOString(),
+        end:           end.toISOString(),
+        value_inc_vat: Math.max(0.01, curve[i % 48] + noise),
+      });
+    }
+    return rates;
+  }
+
+  // ── Greenness forecast generator ─────────────────────────────────────────────
+  function generateForecast(tonightScore) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const scores = [tonightScore, 55, 72, 38, 65, 48, 80];
+    const labels = ['VERY_GREEN', 'MEDIUM', 'VERY_GREEN', 'LOW', 'VERY_GREEN', 'MEDIUM', 'VERY_GREEN'];
+    return scores.map((score, i) => {
+      const d = new Date(today.getTime() + i * 86400000);
+      return {
+        start:           d.toISOString(),
+        end:             new Date(d.getTime() + 86400000).toISOString(),
+        greenness_score: score,
+        greenness_index: labels[i],
+      };
+    });
+  }
+
+  // ── Today/tomorrow midnight timestamps ───────────────────────────────────────
+  const todayMidnight = (() => { const d = new Date(); d.setHours(0,0,0,0); return d; })();
+  const tomorrowMidnight = new Date(todayMidnight.getTime() + 86400000);
+
+  const todayRates    = generateRates(todayMidnight);
+  const tomorrowRates = generateRates(tomorrowMidnight);
+
+  // ── Shared hass builders ─────────────────────────────────────────────────────
+  function makeHass({ currentSoc, targetSoc, plugState, tonightScore }) {
+    const h = {
+      states: {
+        'event.rates_today':    { attributes: { rates: todayRates },    last_changed: '2026-04-18T04:00:00Z' },
+        'event.rates_tomorrow': { attributes: { rates: tomorrowRates }, last_changed: '2026-04-18T16:05:00Z' },
+      },
+    };
+    if (currentSoc  !== undefined) h.states['sensor.ev_soc']    = { state: String(currentSoc) };
+    if (targetSoc   !== undefined) h.states['sensor.ev_target'] = { state: String(targetSoc) };
+    if (plugState   !== undefined) h.states['sensor.ev_plug']   = { state: plugState };
+    if (tonightScore !== undefined) {
+      h.states['sensor.greenness'] = {
+        attributes: { forecast: generateForecast(tonightScore) },
+        last_changed: '2026-04-18T06:00:00Z',
+      };
+    }
+    return h;
+  }
+
+  // ── Card: full data ──────────────────────────────────────────────────────────
+  const cardFull = document.getElementById('card-full');
+  cardFull.setConfig({
+    entity_current_day_rates:  'event.rates_today',
+    entity_next_day_rates:     'event.rates_tomorrow',
+    entity_current_soc:        'sensor.ev_soc',
+    entity_target_soc:         'sensor.ev_target',
+    entity_plug_state:         'sensor.ev_plug',
+    entity_greenness_forecast: 'sensor.greenness',
+    charger_kw:                7.4,
+    split_threshold:           1.0,
+    min_per_pct:               13.5,
+  });
+  cardFull.hass = makeHass({ currentSoc: 42, targetSoc: 80, plugState: 'CHARGING_CABLE_LOCKED', tonightScore: 78 });
+
+  // ── Card: minimal (rates only, defaults for everything else) ─────────────────
+  const cardMinimal = document.getElementById('card-minimal');
+  cardMinimal.setConfig({
+    entity_current_day_rates: 'event.rates_today',
+    entity_next_day_rates:    'event.rates_tomorrow',
+  });
+  cardMinimal.hass = makeHass({});
+
+  // ── Card: battery already full ───────────────────────────────────────────────
+  const cardFullSoc = document.getElementById('card-full-soc');
+  cardFullSoc.setConfig({
+    entity_current_day_rates:  'event.rates_today',
+    entity_current_soc:        'sensor.ev_soc',
+    entity_target_soc:         'sensor.ev_target',
+    entity_plug_state:         'sensor.ev_plug',
+    entity_greenness_forecast: 'sensor.greenness',
+  });
+  cardFullSoc.hass = makeHass({ currentSoc: 85, targetSoc: 80, plugState: 'CHARGING_CABLE_LOCKED', tonightScore: 55 });
+
+  // ── Card: low greenness tonight ──────────────────────────────────────────────
+  const cardLowGreen = document.getElementById('card-low-green');
+  cardLowGreen.setConfig({
+    entity_current_day_rates:  'event.rates_today',
+    entity_next_day_rates:     'event.rates_tomorrow',
+    entity_current_soc:        'sensor.ev_soc',
+    entity_target_soc:         'sensor.ev_target',
+    entity_plug_state:         'sensor.ev_plug',
+    entity_greenness_forecast: 'sensor.greenness',
+    charger_kw:                3.7,
+  });
+  cardLowGreen.hass = makeHass({ currentSoc: 20, targetSoc: 80, plugState: 'not_connected', tonightScore: 25 });
+</script>
+
+</body>
+</html>
