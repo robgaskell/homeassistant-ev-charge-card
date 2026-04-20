@@ -21,45 +21,36 @@
 
 const CARD_CSS = `
   :host { display: block; }
-  ha-card {
-    padding: 16px;
+  .card-content {
+    padding: 0 16px 16px;
     font-family: var(--ha-font-family-body, sans-serif);
     font-size: var(--ha-font-size-m, 14px);
     color: var(--primary-text-color);
   }
-  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-  .title { font-size: var(--ha-card-header-font-size, var(--ha-font-size-l, 16px)); font-weight: 500; color: var(--ha-card-header-color, var(--primary-text-color)); }
-  .header-right { display: flex; align-items: center; gap: 8px; }
-  .refresh-btn {
-    cursor: pointer; background: none; border: none;
-    color: var(--secondary-text-color); font-size: var(--ha-font-size-l, 16px); padding: 2px 6px;
-    border-radius: 4px; line-height: 1;
-  }
-  .refresh-btn:hover { color: var(--primary-color); background: var(--secondary-background-color); }
   hr { border: none; border-top: 1px solid var(--divider-color); margin: 12px 0; }
   .soc-line { font-weight: 500; margin-bottom: 2px; }
-  .detail-line { color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 12px); margin-bottom: 2px; }
+  .detail-line { color: var(--secondary-text-color); margin-bottom: 2px; }
   .plug-plugged { color: var(--success-color, #4CAF50); }
   .plug-unplugged { color: var(--warning-color, #FF9800); }
   .plug-unknown { color: var(--secondary-text-color); }
   .section-title {
-    font-size: var(--ha-font-size-s, 12px); font-weight: 600; color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-m, 14px); font-weight: 600; color: var(--secondary-text-color);
     letter-spacing: 0.06em; text-transform: uppercase; margin: 12px 0 6px;
   }
   .run {
     display: grid; grid-template-columns: 72px 1fr auto auto;
     gap: 8px; align-items: center; margin-bottom: 4px;
   }
-  .run-date { color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 12px); }
+  .run-date { color: var(--secondary-text-color); }
   .run-price { color: var(--secondary-text-color); text-align: right; }
   .run-cost { font-weight: 500; min-width: 36px; text-align: right; }
-  .skipped { font-size: var(--ha-font-size-s, 12px); color: var(--warning-color, #FF9800); margin: 2px 0; }
+  .skipped { color: var(--warning-color, #FF9800); margin: 2px 0; }
   .total-cost { font-weight: 500; margin-top: 8px; }
-  .saving { font-size: var(--ha-font-size-s, 12px); color: var(--secondary-text-color); margin-top: 2px; }
+  .saving { color: var(--secondary-text-color); margin-top: 2px; }
   .status-ok { color: var(--success-color, #4CAF50); font-style: italic; padding: 4px 0; }
   .status-warn { color: var(--warning-color, #FF9800); padding: 4px 0; }
   .status-muted { color: var(--secondary-text-color); padding: 4px 0; }
-  .gn-advice { font-size: var(--ha-font-size-s, 12px); color: var(--secondary-text-color); font-style: italic; padding: 4px 0; }
+  .gn-advice { color: var(--secondary-text-color); font-style: italic; padding: 4px 0; }
 `;
 
 class EvChargeCard extends HTMLElement {
@@ -241,39 +232,20 @@ class EvChargeCard extends HTMLElement {
     this.shadowRoot.appendChild(styleEl);
 
     const card = document.createElement('ha-card');
-    card.appendChild(this._buildHeader());
-    card.appendChild(_hr());
-    card.appendChild(this._buildSummary(plan));
-    card.appendChild(_hr());
-    card.appendChild(this._buildScheduleSection(plan, rates));
+    card.setAttribute('header', 'EV Charge Plan');
+
+    const content = document.createElement('div');
+    content.className = 'card-content';
+    content.appendChild(this._buildSummary(plan));
+    content.appendChild(_hr());
+    content.appendChild(this._buildScheduleSection(plan, rates));
     const advice = this._buildGreenAdvice(forecast, tonightScore);
     if (advice) {
-      card.appendChild(_hr());
-      card.appendChild(advice);
+      content.appendChild(_hr());
+      content.appendChild(advice);
     }
+    card.appendChild(content);
     this.shadowRoot.appendChild(card);
-  }
-
-  _buildHeader() {
-    const header = _el('div', 'header');
-
-    const title = _el('span', 'title');
-    title.textContent = '🔋 EV Charge Plan';
-    header.appendChild(title);
-
-    const right = _el('div', 'header-right');
-
-    const btn = _el('button', 'refresh-btn');
-    btn.title = 'Refresh rates';
-    btn.textContent = '↻';
-    btn.addEventListener('click', () => {
-      this._lastStateKey = null;
-      this._render();
-    });
-    right.appendChild(btn);
-
-    header.appendChild(right);
-    return header;
   }
 
   _buildSummary({ currentSoc, targetSoc, pctToAdd, timeNeeded, slotsNeeded, energyNeeded, isPlugged, plugStateVal }) {
