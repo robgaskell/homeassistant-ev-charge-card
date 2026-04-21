@@ -442,7 +442,7 @@ class EvChargeCard extends HTMLElement {
           dateEl.textContent = row.label;
           priceRow.appendChild(dateEl);
 
-          const timeEl = _el('span', '');
+          const timeEl = _el('span', 'run-time');
           timeEl.textContent = row.timeRange;
           priceRow.appendChild(timeEl);
 
@@ -568,7 +568,7 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
   if (!integration || !CHARGER_INTEGRATIONS[integration]) return [];
 
   const defn      = CHARGER_INTEGRATIONS[integration];
-  const chargerKw = parseFloat(config.charger_kw) || 3.7;
+  const chargerKw = config.charger_kw || 3.7;
 
   const DAY_NAMES  = ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'];
   const todayDate  = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -651,12 +651,16 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
             unknown:   true,
           });
         } else {
-          const totalCost = seg.slots.reduce((sum, slot) => {
+          let totalCost = 0, weightedPriceMs = 0, totalMs = 0;
+          for (const slot of seg.slots) {
             const sh = Math.max(slot.validFrom.getTime(), seg.start.getTime());
             const eh = Math.min(slot.validTo.getTime(),   seg.end.getTime());
-            return sum + chargerKw * ((eh - sh) / 3_600_000) * slot.price / 100;
-          }, 0);
-          const avgPrice = seg.slots.reduce((s, slot) => s + slot.price, 0) / seg.slots.length;
+            const ms = eh - sh;
+            totalCost      += chargerKw * (ms / 3_600_000) * slot.price / 100;
+            weightedPriceMs += slot.price * ms;
+            totalMs         += ms;
+          }
+          const avgPrice = totalMs > 0 ? weightedPriceMs / totalMs : 0;
           pricingRows.push({
             label:     _fmtSlotDate(seg.start),
             timeRange: `${_fmtTime(seg.start)}–${_fmtTime(seg.end)}`,
@@ -669,9 +673,12 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
     }
 
     if (!pricingRows.length)
-      pricingRows.push({ label: 'Upcoming sessions', timeRange: null, unknown: true });
+      pricingRows.push({ timeRange: null, unknown: true });
 
-    // Live session detection — only applies to today
+    // Live session detection — only applies to today.
+    // Known gap: for midnight-crossing sessions (e.g. 23:00–01:00), the live row
+    // does not fire during the post-midnight portion (00:00–01:00) because by then
+    // todayDate has advanced and sessStart/sessEnd no longer bracket `now`.
     let liveRow = null;
     if (days.includes(todayName)) {
       const [sessStart, sessEnd] = sessionBounds(todayDate, start, end);
