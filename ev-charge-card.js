@@ -426,7 +426,7 @@ class EvChargeCard extends HTMLElement {
         if (row.unknown) {
           const unknownEl = _el('div', 'status-muted');
           unknownEl.textContent = row.timeRange
-            ? `${row.label}  ${row.timeRange}  Price not published`
+            ? `${row.label} · ${row.timeRange} · Price not published`
             : `Not scheduled today or tomorrow`;
           sessDiv.appendChild(unknownEl);
         } else {
