@@ -51,7 +51,26 @@ const CARD_CSS = `
   .status-warn { color: var(--warning-color, #FF9800); padding: 4px 0; }
   .status-muted { color: var(--secondary-text-color); padding: 4px 0; }
   .gn-advice { color: var(--secondary-text-color); font-style: italic; padding: 4px 0; }
+  .charger-session { margin-bottom: 8px; }
+  .charger-session-header { color: var(--secondary-text-color); font-size: 0.9em; margin: 4px 0 6px; }
+  .charger-session-row {
+    display: grid; grid-template-columns: 72px 1fr auto auto;
+    gap: 8px; align-items: center; margin-bottom: 4px;
+  }
+  .charger-live { color: var(--primary-color); font-style: italic; margin-bottom: 6px; }
 `;
+
+const CHARGER_INTEGRATIONS = {
+  hypervolt: {
+    daysEntity:    (n) => `text.hypervolt_schedule_session_${n}_days_of_week`,
+    startEntity:   (n) => `time.hypervolt_schedule_session_${n}_start_time`,
+    endEntity:     (n) => `time.hypervolt_schedule_session_${n}_end_time`,
+    energySensors: [
+      'sensor.hypervolt_session_energy',
+      'sensor.hypervolt_session_energy_total_increasing',
+    ],
+  },
+};
 
 class EvChargeCard extends HTMLElement {
   constructor() {
@@ -78,6 +97,7 @@ class EvChargeCard extends HTMLElement {
       entity_plug_state:         config.entity_plug_state         || null,
       plug_state_value:          config.plug_state_value          || 'CHARGING_CABLE_LOCKED',
       entity_greenness_forecast: config.entity_greenness_forecast || null,
+      charger_integration:       config.charger_integration       || null,
     };
   }
 
