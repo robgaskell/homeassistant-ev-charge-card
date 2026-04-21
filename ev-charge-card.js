@@ -473,6 +473,16 @@ function _fmtDuration(minutes) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+function _fmtDayRange(days) {
+  const ORDER = ['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'];
+  const SHORT  = { MONDAY:'Mon', TUESDAY:'Tue', WEDNESDAY:'Wed', THURSDAY:'Thu', FRIDAY:'Fri', SATURDAY:'Sat', SUNDAY:'Sun' };
+  const sorted = [...days].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
+  const idxs   = sorted.map(d => ORDER.indexOf(d));
+  const consec = sorted.length > 1 && idxs.every((v, i) => i === 0 || v === idxs[i - 1] + 1);
+  if (sorted.length === 1) return SHORT[sorted[0]] || sorted[0];
+  if (consec) return `${SHORT[sorted[0]]}–${SHORT[sorted[sorted.length - 1]]}`;
+  return sorted.map(d => SHORT[d] || d).join(', ');
+}
 
 if (!customElements.get('ev-charge-card')) {
   customElements.define('ev-charge-card', EvChargeCard);
