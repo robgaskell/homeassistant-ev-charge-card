@@ -484,6 +484,156 @@ function _fmtDayRange(days) {
   return sorted.map(d => SHORT[d] || d).join(', ');
 }
 
+function _readChargerSessions(hass, rates, config, now = new Date()) {
+  const integration = config.charger_integration;
+  if (!integration || !CHARGER_INTEGRATIONS[integration]) return [];
+
+  const defn      = CHARGER_INTEGRATIONS[integration];
+  const chargerKw = parseFloat(config.charger_kw) || 3.7;
+
+  const DAY_NAMES  = ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'];
+  const todayDate  = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrowDate = new Date(todayDate.getTime() + 86_400_000);
+  const todayName    = DAY_NAMES[todayDate.getDay()];
+  const tomorrowName = DAY_NAMES[tomorrowDate.getDay()];
+
+  const parseTime = s => { const [h, m] = s.split(':').map(Number); return { h, m }; };
+
+  // Returns [sessionStart, sessionEnd] as Date objects; handles midnight-crossing sessions.
+  const sessionBounds = (base, start, end) => {
+    const s = new Date(base.getFullYear(), base.getMonth(), base.getDate(), start.h, start.m);
+    const e = new Date(base.getFullYear(), base.getMonth(), base.getDate(), end.h,   end.m);
+    if (e.getTime() <= s.getTime()) e.setDate(e.getDate() + 1);
+    return [s, e];
+  };
+
+  // Splits [sessStart, sessEnd] into contiguous segments of known/unknown pricing.
+  const buildSegments = (sessStart, sessEnd) => {
+    const slots = rates
+      .filter(r => r.validFrom < sessEnd && r.validTo > sessStart)
+      .sort((a, b) => a.validFrom - b.validFrom);
+
+    if (!slots.length) return [{ unknown: true, start: sessStart, end: sessEnd, slots: [] }];
+
+    const segs   = [];
+    let   cursor = sessStart.getTime();
+
+    for (const slot of slots) {
+      if (cursor < slot.validFrom.getTime())
+        segs.push({ unknown: true, start: new Date(cursor), end: new Date(slot.validFrom.getTime()), slots: [] });
+
+      const segStart = new Date(Math.max(slot.validFrom.getTime(), sessStart.getTime()));
+      const segEnd   = new Date(Math.min(slot.validTo.getTime(),   sessEnd.getTime()));
+
+      // Merge into previous known segment if directly consecutive
+      const prev = segs[segs.length - 1];
+      if (prev && !prev.unknown && prev.end.getTime() === segStart.getTime()) {
+        prev.end = segEnd;
+        prev.slots.push(slot);
+      } else {
+        segs.push({ unknown: false, start: segStart, end: segEnd, slots: [slot] });
+      }
+      cursor = segEnd.getTime();
+    }
+
+    if (cursor < sessEnd.getTime())
+      segs.push({ unknown: true, start: new Date(cursor), end: new Date(sessEnd.getTime()), slots: [] });
+
+    return segs;
+  };
+
+  const sessions = [];
+
+  for (let n = 1; n <= 6; n++) {
+    const daysState  = hass.states[defn.daysEntity(n)]?.state;
+    const startState = hass.states[defn.startEntity(n)]?.state;
+    const endState   = hass.states[defn.endEntity(n)]?.state;
+
+    const invalid = v => !v || v === 'unknown' || v === 'unavailable' || v.trim() === '';
+    if (invalid(daysState) || invalid(startState) || invalid(endState)) continue;
+
+    const days  = daysState.split(',').map(d => d.trim().toUpperCase());
+    const start = parseTime(startState);
+    const end   = parseTime(endState);
+
+    const pricingRows = [];
+
+    for (const [dayName, baseDate] of [[todayName, todayDate], [tomorrowName, tomorrowDate]]) {
+      if (!days.includes(dayName)) continue;
+
+      const [sessStart, sessEnd] = sessionBounds(baseDate, start, end);
+      const segs = buildSegments(sessStart, sessEnd);
+
+      for (const seg of segs) {
+        if (seg.unknown) {
+          pricingRows.push({
+            label:     _fmtSlotDate(seg.start),
+            timeRange: `${_fmtTime(seg.start)}–${_fmtTime(seg.end)}`,
+            unknown:   true,
+          });
+        } else {
+          const totalCost = seg.slots.reduce((sum, slot) => {
+            const sh = Math.max(slot.validFrom.getTime(), seg.start.getTime());
+            const eh = Math.min(slot.validTo.getTime(),   seg.end.getTime());
+            return sum + chargerKw * ((eh - sh) / 3_600_000) * slot.price / 100;
+          }, 0);
+          const avgPrice = seg.slots.reduce((s, slot) => s + slot.price, 0) / seg.slots.length;
+          pricingRows.push({
+            label:     _fmtSlotDate(seg.start),
+            timeRange: `${_fmtTime(seg.start)}–${_fmtTime(seg.end)}`,
+            avgPrice,
+            totalCost,
+            unknown:   false,
+          });
+        }
+      }
+    }
+
+    if (!pricingRows.length)
+      pricingRows.push({ label: 'Upcoming sessions', timeRange: null, unknown: true });
+
+    // Live session detection — only applies to today
+    let liveRow = null;
+    if (days.includes(todayName)) {
+      const [sessStart, sessEnd] = sessionBounds(todayDate, start, end);
+      if (now >= sessStart && now < sessEnd) {
+        const energyId  = defn.energySensors.find(id => hass.states[id]);
+        const actualKwh = energyId ? (parseFloat(hass.states[energyId].state) || 0) : 0;
+        const elapsedH  = (now.getTime() - sessStart.getTime()) / 3_600_000;
+        const actualPow = elapsedH > 0 ? actualKwh / elapsedH : chargerKw;
+
+        const segs = buildSegments(sessStart, sessEnd);
+        let costSoFar = 0, estRemaining = 0;
+
+        for (const seg of segs) {
+          if (seg.unknown) continue;
+          for (const slot of seg.slots) {
+            const sh = Math.max(slot.validFrom.getTime(), seg.start.getTime());
+            const eh = Math.min(slot.validTo.getTime(),   seg.end.getTime());
+            if (eh <= now.getTime()) {
+              costSoFar    += actualPow * ((eh - sh) / 3_600_000) * slot.price / 100;
+            } else if (sh >= now.getTime()) {
+              estRemaining += chargerKw  * ((eh - sh) / 3_600_000) * slot.price / 100;
+            } else {
+              costSoFar    += actualPow * ((now.getTime() - sh) / 3_600_000) * slot.price / 100;
+              estRemaining += chargerKw  * ((eh - now.getTime()) / 3_600_000) * slot.price / 100;
+            }
+          }
+        }
+        liveRow = { kwh: actualKwh, costSoFar, estTotal: costSoFar + estRemaining };
+      }
+    }
+
+    sessions.push({
+      header: `${_fmtDayRange(days)} · ${String(start.h).padStart(2,'0')}:${String(start.m).padStart(2,'0')} – ${String(end.h).padStart(2,'0')}:${String(end.m).padStart(2,'0')}`,
+      pricingRows,
+      liveRow,
+    });
+  }
+
+  return sessions;
+}
+
 if (!customElements.get('ev-charge-card')) {
   customElements.define('ev-charge-card', EvChargeCard);
 }
