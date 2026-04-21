@@ -578,7 +578,6 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
 
   const parseTime = s => { const [h, m] = s.split(':').map(Number); return { h, m }; };
 
-  // Returns [sessionStart, sessionEnd] as Date objects; handles midnight-crossing sessions.
   const sessionBounds = (base, start, end) => {
     const s = new Date(base.getFullYear(), base.getMonth(), base.getDate(), start.h, start.m);
     const e = new Date(base.getFullYear(), base.getMonth(), base.getDate(), end.h,   end.m);
@@ -586,11 +585,8 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
     return [s, e];
   };
 
-  // Splits [sessStart, sessEnd] into contiguous segments of known/unknown pricing.
   const buildSegments = (sessStart, sessEnd) => {
-    const slots = rates
-      .filter(r => r.validFrom < sessEnd && r.validTo > sessStart)
-      .sort((a, b) => a.validFrom - b.validFrom);
+    const slots = rates.filter(r => r.validFrom < sessEnd && r.validTo > sessStart);
 
     if (!slots.length) return [{ unknown: true, start: sessStart, end: sessEnd, slots: [] }];
 
@@ -604,7 +600,6 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
       const segStart = new Date(Math.max(slot.validFrom.getTime(), sessStart.getTime()));
       const segEnd   = new Date(Math.min(slot.validTo.getTime(),   sessEnd.getTime()));
 
-      // Merge into previous known segment if directly consecutive
       const prev = segs[segs.length - 1];
       if (prev && !prev.unknown && prev.end.getTime() === segStart.getTime()) {
         prev.end = segEnd;
@@ -636,12 +631,14 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
     const end   = parseTime(endState);
 
     const pricingRows = [];
+    let todaySessStart = null, todaySessEnd = null, todaySegs = null;
 
     for (const [dayName, baseDate] of [[todayName, todayDate], [tomorrowName, tomorrowDate]]) {
       if (!days.includes(dayName)) continue;
 
       const [sessStart, sessEnd] = sessionBounds(baseDate, start, end);
       const segs = buildSegments(sessStart, sessEnd);
+      if (dayName === todayName) { todaySessStart = sessStart; todaySessEnd = sessEnd; todaySegs = segs; }
 
       for (const seg of segs) {
         if (seg.unknown) {
@@ -680,34 +677,30 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
     // does not fire during the post-midnight portion (00:00–01:00) because by then
     // todayDate has advanced and sessStart/sessEnd no longer bracket `now`.
     let liveRow = null;
-    if (days.includes(todayName)) {
-      const [sessStart, sessEnd] = sessionBounds(todayDate, start, end);
-      if (now >= sessStart && now < sessEnd) {
-        const energyId  = defn.energySensors.find(id => hass.states[id]);
-        const actualKwh = energyId ? (parseFloat(hass.states[energyId].state) || 0) : 0;
-        const elapsedH  = (now.getTime() - sessStart.getTime()) / 3_600_000;
-        const actualPow = elapsedH > 0 ? actualKwh / elapsedH : chargerKw;
+    if (todaySessStart && now >= todaySessStart && now < todaySessEnd) {
+      const energyId  = defn.energySensors.find(id => hass.states[id]);
+      const actualKwh = energyId ? (parseFloat(hass.states[energyId].state) || 0) : 0;
+      const elapsedH  = (now.getTime() - todaySessStart.getTime()) / 3_600_000;
+      const actualPow = elapsedH > 0 ? actualKwh / elapsedH : chargerKw;
 
-        const segs = buildSegments(sessStart, sessEnd);
-        let costSoFar = 0, estRemaining = 0;
+      let costSoFar = 0, estRemaining = 0;
 
-        for (const seg of segs) {
-          if (seg.unknown) continue;
-          for (const slot of seg.slots) {
-            const sh = Math.max(slot.validFrom.getTime(), seg.start.getTime());
-            const eh = Math.min(slot.validTo.getTime(),   seg.end.getTime());
-            if (eh <= now.getTime()) {
-              costSoFar    += actualPow * ((eh - sh) / 3_600_000) * slot.price / 100;
-            } else if (sh >= now.getTime()) {
-              estRemaining += chargerKw  * ((eh - sh) / 3_600_000) * slot.price / 100;
-            } else {
-              costSoFar    += actualPow * ((now.getTime() - sh) / 3_600_000) * slot.price / 100;
-              estRemaining += chargerKw  * ((eh - now.getTime()) / 3_600_000) * slot.price / 100;
-            }
+      for (const seg of todaySegs) {
+        if (seg.unknown) continue;
+        for (const slot of seg.slots) {
+          const sh = Math.max(slot.validFrom.getTime(), seg.start.getTime());
+          const eh = Math.min(slot.validTo.getTime(),   seg.end.getTime());
+          if (eh <= now.getTime()) {
+            costSoFar    += actualPow * ((eh - sh) / 3_600_000) * slot.price / 100;
+          } else if (sh >= now.getTime()) {
+            estRemaining += chargerKw  * ((eh - sh) / 3_600_000) * slot.price / 100;
+          } else {
+            costSoFar    += actualPow * ((now.getTime() - sh) / 3_600_000) * slot.price / 100;
+            estRemaining += chargerKw  * ((eh - now.getTime()) / 3_600_000) * slot.price / 100;
           }
         }
-        liveRow = { kwh: actualKwh, costSoFar, estTotal: costSoFar + estRemaining };
       }
+      liveRow = { kwh: actualKwh, costSoFar, estTotal: costSoFar + estRemaining };
     }
 
     sessions.push({
