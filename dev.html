@@ -80,6 +80,16 @@
   <ev-charge-card id="card-low-green"></ev-charge-card>
 </div>
 
+<div class="scenario">
+  <div class="scenario-label">Hypervolt – full coverage (active session + split)</div>
+  <ev-charge-card id="card-hv-full"></ev-charge-card>
+</div>
+
+<div class="scenario">
+  <div class="scenario-label">Hypervolt – minimal (tomorrow rates, no active session)</div>
+  <ev-charge-card id="card-hv-minimal"></ev-charge-card>
+</div>
+
 <script>
   // ── ha-card shim ────────────────────────────────────────────────────────────
   // HA's ha-card is a Polymer element; we register a plain shim so the card renders.
@@ -211,6 +221,57 @@
     charger_kw:                3.7,
   });
   cardLowGreen.hass = makeHass({ currentSoc: 20, targetSoc: 80, plugState: 'not_connected', tonightScore: 25 });
+
+  // ── Card: Hypervolt – full coverage ──────────────────────────────────────────
+  // Session 1: Mon–Fri 09:00–21:00   (wide window so live row always shows on weekdays)
+  // Session 2: Sat–Sun 01:00–05:00   (today is Tue → "price not published")
+  // Session 3: Daily  23:00–01:00    (midnight-crossing → split row if tomorrow rates absent)
+  // Energy sensor simulates 2.1 kWh used.
+  const cardHvFull = document.getElementById('card-hv-full');
+  cardHvFull.setConfig({
+    entity_current_day_rates:  'event.rates_today',
+    entity_next_day_rates:     'event.rates_tomorrow',
+    entity_current_soc:        'sensor.ev_soc',
+    entity_target_soc:         'sensor.ev_target',
+    entity_plug_state:         'sensor.ev_plug',
+    charger_kw:                7,
+    charger_integration:       'hypervolt',
+  });
+  (() => {
+    const h = makeHass({ currentSoc: 55, targetSoc: 80, plugState: 'CHARGING_CABLE_LOCKED' });
+    // Session 1: Mon–Fri 09:00–21:00
+    h.states['text.hypervolt_schedule_session_1_days_of_week'] = { state: 'MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY', last_changed: '2026-04-21T00:00:00Z' };
+    h.states['time.hypervolt_schedule_session_1_start_time']   = { state: '09:00:00', last_changed: '2026-04-21T00:00:00Z' };
+    h.states['time.hypervolt_schedule_session_1_end_time']     = { state: '21:00:00', last_changed: '2026-04-21T00:00:00Z' };
+    // Session 2: Sat–Sun 01:00–05:00
+    h.states['text.hypervolt_schedule_session_2_days_of_week'] = { state: 'SATURDAY,SUNDAY', last_changed: '2026-04-21T00:00:00Z' };
+    h.states['time.hypervolt_schedule_session_2_start_time']   = { state: '01:00:00', last_changed: '2026-04-21T00:00:00Z' };
+    h.states['time.hypervolt_schedule_session_2_end_time']     = { state: '05:00:00', last_changed: '2026-04-21T00:00:00Z' };
+    // Session 3: Daily 23:00–01:00 (midnight-crossing)
+    h.states['text.hypervolt_schedule_session_3_days_of_week'] = { state: 'MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY,SATURDAY,SUNDAY', last_changed: '2026-04-21T00:00:00Z' };
+    h.states['time.hypervolt_schedule_session_3_start_time']   = { state: '23:00:00', last_changed: '2026-04-21T00:00:00Z' };
+    h.states['time.hypervolt_schedule_session_3_end_time']     = { state: '01:00:00', last_changed: '2026-04-21T00:00:00Z' };
+    // Energy sensor (active session)
+    h.states['sensor.hypervolt_session_energy'] = { state: '2.1', last_changed: '2026-04-21T09:00:00Z' };
+    cardHvFull.hass = h;
+  })();
+
+  // ── Card: Hypervolt – minimal ────────────────────────────────────────────────
+  // Single daily session 02:00–05:00; tomorrow rates published; no energy sensor.
+  const cardHvMinimal = document.getElementById('card-hv-minimal');
+  cardHvMinimal.setConfig({
+    entity_current_day_rates: 'event.rates_today',
+    entity_next_day_rates:    'event.rates_tomorrow',
+    charger_kw:               7,
+    charger_integration:      'hypervolt',
+  });
+  (() => {
+    const h = makeHass({});
+    h.states['text.hypervolt_schedule_session_1_days_of_week'] = { state: 'MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY,SATURDAY,SUNDAY', last_changed: '2026-04-21T00:00:00Z' };
+    h.states['time.hypervolt_schedule_session_1_start_time']   = { state: '02:00:00', last_changed: '2026-04-21T00:00:00Z' };
+    h.states['time.hypervolt_schedule_session_1_end_time']     = { state: '05:00:00', last_changed: '2026-04-21T00:00:00Z' };
+    cardHvMinimal.hass = h;
+  })();
 </script>
 
 </body>
