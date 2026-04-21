@@ -400,6 +400,64 @@ class EvChargeCard extends HTMLElement {
     return null;
   }
 
+  _buildChargerScheduleSection(sessions) {
+    const section = _el('div', '');
+
+    const title = _el('div', 'section-title');
+    title.textContent = 'CHARGER SCHEDULE';
+    section.appendChild(title);
+
+    sessions.forEach((sess, i) => {
+      if (i > 0) section.appendChild(_hr());
+
+      const sessDiv = _el('div', 'charger-session');
+
+      const header = _el('div', 'charger-session-header');
+      header.textContent = sess.header;
+      sessDiv.appendChild(header);
+
+      if (sess.liveRow) {
+        const live = _el('div', 'charger-live');
+        live.textContent = `⚡ Charging now · ${sess.liveRow.kwh.toFixed(1)} kWh · £${sess.liveRow.costSoFar.toFixed(2)} so far (est. £${sess.liveRow.estTotal.toFixed(2)} total)`;
+        sessDiv.appendChild(live);
+      }
+
+      for (const row of sess.pricingRows) {
+        if (row.unknown) {
+          const unknownEl = _el('div', 'status-muted');
+          unknownEl.textContent = row.timeRange
+            ? `${row.label}  ${row.timeRange}  Price not published`
+            : `Not scheduled today or tomorrow`;
+          sessDiv.appendChild(unknownEl);
+        } else {
+          const priceRow = _el('div', 'charger-session-row');
+
+          const dateEl = _el('span', 'run-date');
+          dateEl.textContent = row.label;
+          priceRow.appendChild(dateEl);
+
+          const timeEl = _el('span', '');
+          timeEl.textContent = row.timeRange;
+          priceRow.appendChild(timeEl);
+
+          const priceEl = _el('span', 'run-price');
+          priceEl.textContent = `${row.avgPrice.toFixed(1)}p avg`;
+          priceRow.appendChild(priceEl);
+
+          const costEl = _el('span', 'run-cost');
+          costEl.textContent = `£${row.totalCost.toFixed(2)}`;
+          priceRow.appendChild(costEl);
+
+          sessDiv.appendChild(priceRow);
+        }
+      }
+
+      section.appendChild(sessDiv);
+    });
+
+    return section;
+  }
+
   // ── State change detection ────────────────────────────────────────────────
 
   _stateKey(hass) {
