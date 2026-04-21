@@ -13,6 +13,7 @@
  *   entity_plug_state: sensor.my_ev_plug_state                                           # optional
  *   entity_greenness_forecast: sensor.octopus_energy_a_xxxxx_greenness_forecast_current_index  # optional
  *   charger_kw: 3.7                       # optional, default 3.7
+ *   charger_integration: hypervolt        # optional, enables CHARGER SCHEDULE section
  *   split_threshold: 1.0                  # optional, default 1.0 p/kWh
  *   min_per_pct: 13.5                     # optional, default 13.5 min per 1%
  *   plug_state_value: CHARGING_CABLE_LOCKED  # optional, default CHARGING_CABLE_LOCKED
@@ -264,6 +265,11 @@ class EvChargeCard extends HTMLElement {
       content.appendChild(_hr());
       content.appendChild(advice);
     }
+    const chargerSessions = _readChargerSessions(this._hass, rates, this._config);
+    if (chargerSessions.length > 0) {
+      content.appendChild(_hr());
+      content.appendChild(this._buildChargerScheduleSection(chargerSessions));
+    }
     card.appendChild(content);
     this.shadowRoot.appendChild(card);
   }
@@ -463,15 +469,30 @@ class EvChargeCard extends HTMLElement {
   _stateKey(hass) {
     const { entity_current_day_rates, entity_next_day_rates,
             entity_current_soc, entity_target_soc,
-            entity_plug_state, entity_greenness_forecast } = this._config;
-    return [
+            entity_plug_state, entity_greenness_forecast,
+            charger_integration } = this._config;
+
+    const parts = [
       hass.states[entity_current_day_rates]?.last_changed,
       entity_next_day_rates     ? hass.states[entity_next_day_rates]?.last_changed     : '',
       entity_current_soc        ? hass.states[entity_current_soc]?.state               : '',
       entity_target_soc         ? hass.states[entity_target_soc]?.state                : '',
       entity_plug_state         ? hass.states[entity_plug_state]?.state                : '',
       entity_greenness_forecast ? hass.states[entity_greenness_forecast]?.last_changed : '',
-    ].join('|');
+    ];
+
+    const defn = charger_integration && CHARGER_INTEGRATIONS[charger_integration];
+    if (defn) {
+      for (let n = 1; n <= 6; n++) {
+        parts.push(hass.states[defn.daysEntity(n)]?.state  ?? '');
+        parts.push(hass.states[defn.startEntity(n)]?.state ?? '');
+        parts.push(hass.states[defn.endEntity(n)]?.state   ?? '');
+      }
+      for (const id of defn.energySensors)
+        parts.push(hass.states[id]?.state ?? '');
+    }
+
+    return parts.join('|');
   }
 }
 
