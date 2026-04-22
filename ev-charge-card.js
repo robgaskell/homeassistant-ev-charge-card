@@ -171,31 +171,35 @@ class EvChargeCard extends HTMLElement {
     const { charger_kw, split_threshold } = this._config;
     const energyPerSlot = charger_kw * 0.5;
     const now    = new Date();
-    const future = rates.filter(s => s.validTo > now);
+    const future = rates.filter(slot => slot.validTo > now);
     if (future.length < slotsNeeded) return null;
 
+    // Sliding window: find the cheapest contiguous block of slotsNeeded slots.
     let bestConsec = { avg: Infinity, start: 0 };
     for (let i = 0; i <= future.length - slotsNeeded; i++) {
-      const avg = future.slice(i, i + slotsNeeded).reduce((s, r) => s + r.price, 0) / slotsNeeded;
+      const avg = future.slice(i, i + slotsNeeded).reduce((sum, slot) => sum + slot.price, 0) / slotsNeeded;
       if (avg < bestConsec.avg) bestConsec = { avg, start: i };
     }
     const consecBlock = future.slice(bestConsec.start, bestConsec.start + slotsNeeded);
 
+    // Alternative: pick the N globally cheapest slots (non-contiguous), then re-sort chronologically.
     const cheapestN = [...future].sort((a, b) => a.price - b.price).slice(0, slotsNeeded);
-    const indivAvg  = cheapestN.reduce((s, r) => s + r.price, 0) / slotsNeeded;
+    const splitAvg  = cheapestN.reduce((sum, slot) => sum + slot.price, 0) / slotsNeeded;
 
-    const useSplit = (bestConsec.avg - indivAvg) > split_threshold;
+    // Use the split (non-contiguous) strategy only if it saves more than the threshold over consecutive.
+    const useSplit = (bestConsec.avg - splitAvg) > split_threshold;
     const selected = useSplit
       ? [...cheapestN].sort((a, b) => a.validFrom - b.validFrom)
       : consecBlock;
 
+    // Collect the slots between the first and last selected that were skipped — shown as warnings.
     let skipped = [];
     if (useSplit && selected.length > 1) {
       const rangeStart    = selected[0].validFrom;
       const rangeEnd      = selected[selected.length - 1].validTo;
-      const selectedTimes = new Set(selected.map(s => s.validFrom.getTime()));
+      const selectedTimes = new Set(selected.map(slot => slot.validFrom.getTime()));
       skipped = future.filter(
-        s => s.validFrom >= rangeStart && s.validTo <= rangeEnd && !selectedTimes.has(s.validFrom.getTime()),
+        slot => slot.validFrom >= rangeStart && slot.validTo <= rangeEnd && !selectedTimes.has(slot.validFrom.getTime()),
       );
     }
 
@@ -203,8 +207,8 @@ class EvChargeCard extends HTMLElement {
       runs:        _groupIntoRuns(selected),
       skippedRuns: _groupIntoRuns(skipped),
       useSplit,
-      totalCost:  selected.reduce((sum, s) => sum + s.price * energyPerSlot, 0) / 100,
-      consecCost: consecBlock.reduce((sum, s) => sum + s.price * energyPerSlot, 0) / 100,
+      totalCost:  selected.reduce((sum, slot) => sum + slot.price * energyPerSlot, 0) / 100,
+      consecCost: consecBlock.reduce((sum, slot) => sum + slot.price * energyPerSlot, 0) / 100,
     };
   }
 
@@ -334,9 +338,9 @@ class EvChargeCard extends HTMLElement {
       prevDateLabel = _fmtSlotDate(run[0].validFrom);
     });
 
-    skippedRuns.forEach(grp => {
+    skippedRuns.forEach(run => {
       const row = _el('div', 'skipped');
-      row.textContent = `⚠ Skipped ${_fmtTime(grp[0].validFrom)}–${_fmtTime(grp[grp.length - 1].validTo)} @ ${_avgPrice(grp).toFixed(1)}p`;
+      row.textContent = `⚠ Skipped ${_fmtTime(run[0].validFrom)}–${_fmtTime(run[run.length - 1].validTo)} @ ${_avgPrice(run).toFixed(1)}p`;
       container.appendChild(row);
     });
 
@@ -358,7 +362,7 @@ class EvChargeCard extends HTMLElement {
     const { charger_kw } = this._config;
     const runStart  = run[0].validFrom;
     const runEnd    = run[run.length - 1].validTo;
-    const runCost   = run.reduce((s, r) => s + r.price * charger_kw * 0.5, 0) / 100;
+    const runCost   = run.reduce((sum, slot) => sum + slot.price * charger_kw * 0.5, 0) / 100;
     const dateLabel = _fmtSlotDate(runStart);
 
     const row = _el('div', 'run');
@@ -509,7 +513,7 @@ function _hr() {
 }
 
 function _avgPrice(slots) {
-  return slots.reduce((s, r) => s + r.price, 0) / slots.length;
+  return slots.reduce((sum, slot) => sum + slot.price, 0) / slots.length;
 }
 
 function _groupIntoRuns(slots) {
@@ -517,6 +521,7 @@ function _groupIntoRuns(slots) {
   const runs = [];
   let current = [slots[0]];
   for (let i = 1; i < slots.length; i++) {
+    // A gap > 60 s between consecutive slots means they are non-adjacent — start a new run.
     if (slots[i].validFrom - slots[i - 1].validTo > 60_000) {
       runs.push(current);
       current = [slots[i]];
@@ -547,20 +552,21 @@ function _fmtSlotDate(date) {
 }
 
 function _fmtDuration(minutes) {
-  const h = Math.floor(minutes / 60);
-  const m = Math.round(minutes % 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  const hours = Math.floor(minutes / 60);
+  const mins  = Math.round(minutes % 60);
+  return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
 }
 
 function _fmtDayRange(days) {
   const ORDER = ['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'];
   const SHORT  = { MONDAY:'Mon', TUESDAY:'Tue', WEDNESDAY:'Wed', THURSDAY:'Thu', FRIDAY:'Fri', SATURDAY:'Sat', SUNDAY:'Sun' };
-  const sorted = [...days].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
-  const idxs   = sorted.map(d => ORDER.indexOf(d));
-  const consec = sorted.length > 1 && idxs.every((v, i) => i === 0 || v === idxs[i - 1] + 1);
+  const sorted      = [...days].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
+  const dayIndices  = sorted.map(day => ORDER.indexOf(day));
+  // Consecutive if every day index is exactly one after the previous (e.g. Mon–Fri).
+  const isConsecutive = sorted.length > 1 && dayIndices.every((idx, i) => i === 0 || idx === dayIndices[i - 1] + 1);
   if (sorted.length === 1) return SHORT[sorted[0]] || sorted[0];
-  if (consec) return `${SHORT[sorted[0]]}–${SHORT[sorted[sorted.length - 1]]}`;
-  return sorted.map(d => SHORT[d] || d).join(', ');
+  if (isConsecutive) return `${SHORT[sorted[0]]}–${SHORT[sorted[sorted.length - 1]]}`;
+  return sorted.map(day => SHORT[day] || day).join(', ');
 }
 
 function _readChargerSessions(hass, rates, config, now = new Date()) {
@@ -576,13 +582,14 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
   const todayName    = DAY_NAMES[todayDate.getDay()];
   const tomorrowName = DAY_NAMES[tomorrowDate.getDay()];
 
-  const parseTime = s => { const [h, m] = s.split(':').map(Number); return { h, m }; };
+  const parseTime = timeStr => { const [hours, minutes] = timeStr.split(':').map(Number); return { hours, minutes }; };
 
   const sessionBounds = (base, start, end) => {
-    const s = new Date(base.getFullYear(), base.getMonth(), base.getDate(), start.h, start.m);
-    const e = new Date(base.getFullYear(), base.getMonth(), base.getDate(), end.h,   end.m);
-    if (e.getTime() <= s.getTime()) e.setDate(e.getDate() + 1);
-    return [s, e];
+    const sessStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), start.hours, start.minutes);
+    const sessEnd   = new Date(base.getFullYear(), base.getMonth(), base.getDate(), end.hours,   end.minutes);
+    // Advance end by one day for midnight-crossing sessions where end ≤ start (e.g. 23:00–01:00).
+    if (sessEnd.getTime() <= sessStart.getTime()) sessEnd.setDate(sessEnd.getDate() + 1);
+    return [sessStart, sessEnd];
   };
 
   const buildSegments = (sessStart, sessEnd) => {
@@ -590,6 +597,7 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
 
     if (!slots.length) return [{ unknown: true, start: sessStart, end: sessEnd, slots: [] }];
 
+    // Walk a cursor through the session window, inserting unknown gaps where no rate slots exist.
     const segs   = [];
     let   cursor = sessStart.getTime();
 
@@ -597,9 +605,11 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
       if (cursor < slot.validFrom.getTime())
         segs.push({ unknown: true, start: new Date(cursor), end: new Date(slot.validFrom.getTime()), slots: [] });
 
+      // Clamp slot to the session window (it may extend beyond sessStart/sessEnd).
       const segStart = new Date(Math.max(slot.validFrom.getTime(), sessStart.getTime()));
       const segEnd   = new Date(Math.min(slot.validTo.getTime(),   sessEnd.getTime()));
 
+      // Merge into the previous known segment if this slot is directly consecutive.
       const prev = segs[segs.length - 1];
       if (prev && !prev.unknown && prev.end.getTime() === segStart.getTime()) {
         prev.end = segEnd;
@@ -610,6 +620,7 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
       cursor = segEnd.getTime();
     }
 
+    // Trailing gap: rates don't reach the end of the session window.
     if (cursor < sessEnd.getTime())
       segs.push({ unknown: true, start: new Date(cursor), end: new Date(sessEnd.getTime()), slots: [] });
 
@@ -618,15 +629,15 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
 
   const sessions = [];
 
-  for (let n = 1; n <= 6; n++) {
-    const daysState  = hass.states[defn.daysEntity(n)]?.state;
-    const startState = hass.states[defn.startEntity(n)]?.state;
-    const endState   = hass.states[defn.endEntity(n)]?.state;
+  for (let sessionNum = 1; sessionNum <= 6; sessionNum++) {
+    const daysState  = hass.states[defn.daysEntity(sessionNum)]?.state;
+    const startState = hass.states[defn.startEntity(sessionNum)]?.state;
+    const endState   = hass.states[defn.endEntity(sessionNum)]?.state;
 
     const invalid = v => !v || v === 'unknown' || v === 'unavailable' || v.trim() === '';
     if (invalid(daysState) || invalid(startState) || invalid(endState)) continue;
 
-    const days  = daysState.split(',').map(d => d.trim().toUpperCase());
+    const days  = daysState.split(',').map(day => day.trim().toUpperCase());
     const start = parseTime(startState);
     const end   = parseTime(endState);
 
@@ -648,16 +659,17 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
             unknown:   true,
           });
         } else {
-          let totalCost = 0, weightedPriceMs = 0, totalMs = 0;
+          // Accumulate cost and a time-weighted price sum (duration-accurate average, not slot-count average).
+          let totalCost = 0, weightedPriceSum = 0, totalDurationMs = 0;
           for (const slot of seg.slots) {
-            const sh = Math.max(slot.validFrom.getTime(), seg.start.getTime());
-            const eh = Math.min(slot.validTo.getTime(),   seg.end.getTime());
-            const ms = eh - sh;
-            totalCost      += chargerKw * (ms / 3_600_000) * slot.price / 100;
-            weightedPriceMs += slot.price * ms;
-            totalMs         += ms;
+            const slotStart   = Math.max(slot.validFrom.getTime(), seg.start.getTime());
+            const slotEnd     = Math.min(slot.validTo.getTime(),   seg.end.getTime());
+            const durationMs  = slotEnd - slotStart;
+            totalCost        += chargerKw * (durationMs / 3_600_000) * slot.price / 100;
+            weightedPriceSum += slot.price * durationMs;
+            totalDurationMs  += durationMs;
           }
-          const avgPrice = totalMs > 0 ? weightedPriceMs / totalMs : 0;
+          const avgPrice = totalDurationMs > 0 ? weightedPriceSum / totalDurationMs : 0;
           pricingRows.push({
             label:     _fmtSlotDate(seg.start),
             timeRange: `${_fmtTime(seg.start)}–${_fmtTime(seg.end)}`,
@@ -680,23 +692,26 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
     if (todaySessStart && now >= todaySessStart && now < todaySessEnd) {
       const energyId  = defn.energySensors.find(id => hass.states[id]);
       const actualKwh = energyId ? (parseFloat(hass.states[energyId].state) || 0) : 0;
-      const elapsedH  = (now.getTime() - todaySessStart.getTime()) / 3_600_000;
-      const actualPow = elapsedH > 0 ? actualKwh / elapsedH : chargerKw;
+      const elapsedHours = (now.getTime() - todaySessStart.getTime()) / 3_600_000;
+      // Derive actual draw rate from energy used so far; fall back to rated power if session just started.
+      const actualPower = elapsedHours > 0 ? actualKwh / elapsedHours : chargerKw;
 
       let costSoFar = 0, estRemaining = 0;
 
       for (const seg of todaySegs) {
         if (seg.unknown) continue;
         for (const slot of seg.slots) {
-          const sh = Math.max(slot.validFrom.getTime(), seg.start.getTime());
-          const eh = Math.min(slot.validTo.getTime(),   seg.end.getTime());
-          if (eh <= now.getTime()) {
-            costSoFar    += actualPow * ((eh - sh) / 3_600_000) * slot.price / 100;
-          } else if (sh >= now.getTime()) {
-            estRemaining += chargerKw  * ((eh - sh) / 3_600_000) * slot.price / 100;
+          const slotStart = Math.max(slot.validFrom.getTime(), seg.start.getTime());
+          const slotEnd   = Math.min(slot.validTo.getTime(),   seg.end.getTime());
+          // Slot fully elapsed: cost at actual power; fully future: estimate at rated power;
+          // straddles now: split the slot at the current timestamp.
+          if (slotEnd <= now.getTime()) {
+            costSoFar    += actualPower * ((slotEnd - slotStart) / 3_600_000) * slot.price / 100;
+          } else if (slotStart >= now.getTime()) {
+            estRemaining += chargerKw   * ((slotEnd - slotStart) / 3_600_000) * slot.price / 100;
           } else {
-            costSoFar    += actualPow * ((now.getTime() - sh) / 3_600_000) * slot.price / 100;
-            estRemaining += chargerKw  * ((eh - now.getTime()) / 3_600_000) * slot.price / 100;
+            costSoFar    += actualPower * ((now.getTime() - slotStart) / 3_600_000) * slot.price / 100;
+            estRemaining += chargerKw   * ((slotEnd - now.getTime()) / 3_600_000) * slot.price / 100;
           }
         }
       }
@@ -704,7 +719,7 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
     }
 
     sessions.push({
-      header: `${_fmtDayRange(days)} · ${String(start.h).padStart(2,'0')}:${String(start.m).padStart(2,'0')} – ${String(end.h).padStart(2,'0')}:${String(end.m).padStart(2,'0')}`,
+      header: `${_fmtDayRange(days)} · ${String(start.hours).padStart(2,'0')}:${String(start.minutes).padStart(2,'0')} – ${String(end.hours).padStart(2,'0')}:${String(end.minutes).padStart(2,'0')}`,
       pricingRows,
       liveRow,
     });
