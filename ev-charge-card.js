@@ -6,8 +6,9 @@
  *
  * Config (in dashboard YAML):
  *   type: custom:ev-charge-card
- *   entity_current_day_rates: event.octopus_energy_electricity_XXXXX_current_day_rates   # required
- *   entity_next_day_rates: event.octopus_energy_electricity_XXXXX_next_day_rates         # optional, available after ~4pm
+ *   entity_current_day_rates: event.octopus_energy_electricity_XXXXX_current_day_rates       # required
+ *   entity_next_day_rates: event.octopus_energy_electricity_XXXXX_next_day_rates             # optional, available after ~4pm
+ *   entity_previous_day_rates: event.octopus_energy_electricity_XXXXX_previous_day_rates     # optional, needed for live cost accuracy on midnight-crossing sessions
  *   entity_current_soc: sensor.my_ev_battery_soc                                         # optional
  *   entity_target_soc: sensor.my_ev_target_soc                                           # optional
  *   entity_plug_state: sensor.my_ev_plug_state                                           # optional
@@ -97,8 +98,9 @@ class EvChargeCard extends HTMLElement {
       entity_target_soc:         config.entity_target_soc         || null,
       entity_plug_state:         config.entity_plug_state         || null,
       plug_state_value:          config.plug_state_value          || 'CHARGING_CABLE_LOCKED',
-      entity_greenness_forecast: config.entity_greenness_forecast || null,
-      charger_integration:       config.charger_integration       || null,
+      entity_greenness_forecast:  config.entity_greenness_forecast  || null,
+      entity_previous_day_rates:  config.entity_previous_day_rates  || null,
+      charger_integration:        config.charger_integration        || null,
     };
   }
 
@@ -133,7 +135,7 @@ class EvChargeCard extends HTMLElement {
   // ── Data fetching ─────────────────────────────────────────────────────────
 
   _readRates() {
-    const { entity_current_day_rates, entity_next_day_rates } = this._config;
+    const { entity_current_day_rates, entity_next_day_rates, entity_previous_day_rates } = this._config;
 
     const normalise = (raw) =>
       (raw ?? [])
@@ -144,6 +146,10 @@ class EvChargeCard extends HTMLElement {
           price:     Number(r.value_inc_vat) * 100,
         }));
 
+    const previousRates = entity_previous_day_rates
+      ? normalise(this._hass.states[entity_previous_day_rates]?.attributes?.rates)
+      : [];
+
     const todayRates = normalise(
       this._hass.states[entity_current_day_rates]?.attributes?.rates
     );
@@ -152,7 +158,7 @@ class EvChargeCard extends HTMLElement {
       ? normalise(this._hass.states[entity_next_day_rates]?.attributes?.rates)
       : [];
 
-    const combined = [...todayRates, ...tomorrowRates]
+    const combined = [...previousRates, ...todayRates, ...tomorrowRates]
       .sort((a, b) => a.validFrom - b.validFrom);
 
     // Deduplicate by validFrom timestamp in case entities overlap
@@ -476,9 +482,12 @@ class EvChargeCard extends HTMLElement {
             entity_plug_state, entity_greenness_forecast,
             charger_integration } = this._config;
 
+    const { entity_previous_day_rates } = this._config;
+
     const parts = [
       hass.states[entity_current_day_rates]?.last_changed,
       entity_next_day_rates     ? hass.states[entity_next_day_rates]?.last_changed     : '',
+      entity_previous_day_rates ? hass.states[entity_previous_day_rates]?.last_changed : '',
       entity_current_soc        ? hass.states[entity_current_soc]?.state               : '',
       entity_target_soc         ? hass.states[entity_target_soc]?.state                : '',
       entity_plug_state         ? hass.states[entity_plug_state]?.state                : '',
@@ -576,10 +585,12 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
   const defn      = CHARGER_INTEGRATIONS[integration];
   const chargerKw = config.charger_kw || 3.7;
 
-  const DAY_NAMES  = ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'];
-  const todayDate  = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrowDate = new Date(todayDate.getTime() + 86_400_000);
+  const DAY_NAMES    = ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'];
+  const todayDate    = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayDate  = new Date(todayDate.getTime() - 86_400_000);
+  const tomorrowDate   = new Date(todayDate.getTime() + 86_400_000);
   const todayName    = DAY_NAMES[todayDate.getDay()];
+  const yesterdayName  = DAY_NAMES[yesterdayDate.getDay()];
   const tomorrowName = DAY_NAMES[tomorrowDate.getDay()];
 
   const parseTime = timeStr => { const [hours, minutes] = timeStr.split(':').map(Number); return { hours, minutes }; };
@@ -684,21 +695,37 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
     if (!pricingRows.length)
       pricingRows.push({ timeRange: null, unknown: true });
 
-    // Live session detection — only applies to today.
-    // Known gap: for midnight-crossing sessions (e.g. 23:00–01:00), the live row
-    // does not fire during the post-midnight portion (00:00–01:00) because by then
-    // todayDate has advanced and sessStart/sessEnd no longer bracket `now`.
+    // Determine the active session window for live cost tracking.
+    // For midnight-crossing sessions (end clock-time ≤ start clock-time, e.g. 22:00–02:00),
+    // after midnight todaySessStart is 22:00 tonight (future), so the normal check fails.
+    // Instead, re-derive bounds from yesterday's date: sessStart = 22:00 yesterday,
+    // sessEnd = 02:00 today. entity_previous_day_rates (if configured) supplies the
+    // pre-midnight rate slots; without it, that portion shows as unknown and is omitted.
+    let liveSessStart = todaySessStart;
+    let liveSessEnd   = todaySessEnd;
+    let liveSegs      = todaySegs;
+
+    const isMidnightCrossing = (end.hours * 60 + end.minutes) <= (start.hours * 60 + start.minutes);
+    if (isMidnightCrossing && days.includes(yesterdayName)) {
+      const [crossStart, crossEnd] = sessionBounds(yesterdayDate, start, end);
+      if (now >= crossStart && now < crossEnd) {
+        liveSessStart = crossStart;
+        liveSessEnd   = crossEnd;
+        liveSegs      = buildSegments(crossStart, crossEnd);
+      }
+    }
+
     let liveRow = null;
-    if (todaySessStart && now >= todaySessStart && now < todaySessEnd) {
+    if (liveSessStart && now >= liveSessStart && now < liveSessEnd) {
       const energyId  = defn.energySensors.find(id => hass.states[id]);
       const actualKwh = energyId ? (parseFloat(hass.states[energyId].state) || 0) : 0;
-      const elapsedHours = (now.getTime() - todaySessStart.getTime()) / 3_600_000;
+      const elapsedHours = (now.getTime() - liveSessStart.getTime()) / 3_600_000;
       // Derive actual draw rate from energy used so far; fall back to rated power if session just started.
       const actualPower = elapsedHours > 0 ? actualKwh / elapsedHours : chargerKw;
 
       let costSoFar = 0, estRemaining = 0;
 
-      for (const seg of todaySegs) {
+      for (const seg of liveSegs) {
         if (seg.unknown) continue;
         for (const slot of seg.slots) {
           const slotStart = Math.max(slot.validFrom.getTime(), seg.start.getTime());
