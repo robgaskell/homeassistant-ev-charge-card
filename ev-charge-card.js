@@ -67,9 +67,9 @@ const CHARGER_INTEGRATIONS = {
     daysEntity:    (n) => `text.hypervolt_schedule_session_${n}_days_of_week`,
     startEntity:   (n) => `time.hypervolt_schedule_session_${n}_start_time`,
     endEntity:     (n) => `time.hypervolt_schedule_session_${n}_end_time`,
+    // session_energy resets per session; _total_increasing is a lifetime odometer and must not be used here.
     energySensors: [
       'sensor.hypervolt_session_energy',
-      'sensor.hypervolt_session_energy_total_increasing',
     ],
   },
 };
@@ -717,11 +717,13 @@ function _readChargerSessions(hass, rates, config, now = new Date()) {
 
     let liveRow = null;
     if (liveSessStart && now >= liveSessStart && now < liveSessEnd) {
-      const energyId  = defn.energySensors.find(id => hass.states[id]);
-      const actualKwh = energyId ? (parseFloat(hass.states[energyId].state) || 0) : 0;
+      const energyId    = defn.energySensors.find(id => hass.states[id]);
+      const rawEnergy   = energyId ? (parseFloat(hass.states[energyId].state) || 0) : 0;
+      const energyUnit  = energyId ? (hass.states[energyId].attributes?.unit_of_measurement ?? 'kWh') : 'kWh';
+      const actualKwh   = energyUnit === 'Wh' ? rawEnergy / 1000 : rawEnergy;
       const elapsedHours = (now.getTime() - liveSessStart.getTime()) / 3_600_000;
-      // Derive actual draw rate from energy used so far; fall back to rated power if session just started.
-      const actualPower = elapsedHours > 0 ? actualKwh / elapsedHours : chargerKw;
+      // Derive actual draw rate from energy used so far; fall back to rated power if no valid reading yet.
+      const actualPower = (elapsedHours > 0 && actualKwh > 0) ? actualKwh / elapsedHours : chargerKw;
 
       let costSoFar = 0, estRemaining = 0;
 
