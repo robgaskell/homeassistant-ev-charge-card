@@ -522,6 +522,7 @@ function _hr() {
 }
 
 function _avgPrice(slots) {
+  if (!slots.length) return 0;
   return slots.reduce((sum, slot) => sum + slot.price, 0) / slots.length;
 }
 
