@@ -60,10 +60,13 @@ Replace the `XXXXX` placeholders with your meter's MPAN and serial number. You c
 |--------|---------|-------------|
 | `entity_current_day_rates` | _(required)_ | Octopus Energy event entity for today's half-hourly rates |
 | `entity_next_day_rates` | _(optional)_ | Octopus Energy event entity for tomorrow's rates (available after ~4pm) |
+| `entity_previous_day_rates` | _(optional)_ | Octopus Energy event entity for yesterday's rates — needed for accurate live cost on midnight-crossing sessions |
 | `entity_current_soc` | _(optional)_ | Current battery SoC sensor entity ID |
 | `entity_target_soc` | _(optional)_ | Target SoC sensor entity ID |
-| `entity_plug_state` | _(optional)_ | Plug state sensor entity ID — card checks for `CHARGING_CABLE_LOCKED` |
+| `entity_plug_state` | _(optional)_ | Plug state sensor entity ID |
+| `plug_state_value` | `CHARGING_CABLE_LOCKED` | State value that means the car is plugged in |
 | `entity_greenness_forecast` | _(optional)_ | Greenness forecast sensor entity ID |
+| `charger_integration` | _(optional)_ | Charger brand integration — enables the CHARGER SCHEDULE section. Supported value: `hypervolt` |
 | `charger_kw` | `3.7` | Charger output in kW |
 | `split_threshold` | `1.0` | Minimum p/kWh saving to justify non-consecutive slots |
 | `min_per_pct` | `13.5` | Minutes of charging time per 1% SoC increase |
@@ -75,6 +78,7 @@ In the Octopus Energy integration, the rate entities are named:
 ```
 event.octopus_energy_electricity_{serial}_{mpan}_current_day_rates
 event.octopus_energy_electricity_{serial}_{mpan}_next_day_rates
+event.octopus_energy_electricity_{serial}_{mpan}_previous_day_rates
 ```
 
 To find yours: go to **Settings → Devices & Services → Octopus Energy → Entities** and search for `current_day_rates`.
@@ -89,7 +93,17 @@ The greenness forecast sensor is disabled by default in the Octopus Energy integ
 
 ### Plug state values
 
-The card treats `CHARGING_CABLE_LOCKED` as "plugged in". If your EV integration uses a different state value, the plug status will show as "not plugged in" but the schedule will still be calculated — you can ignore the plug indicator or raise an issue to request a configurable value.
+The card compares `entity_plug_state` against `plug_state_value` (default `CHARGING_CABLE_LOCKED`). If your EV integration uses a different state value, set `plug_state_value` to match. The schedule is always calculated regardless of plug state — the plug indicator is informational only.
+
+### Hypervolt charger integration
+
+If you have a Hypervolt charger with the [Hypervolt Home Assistant integration](https://github.com/MeatBall1337/home-assistant-hypervolt-charger) installed, set `charger_integration: hypervolt` to unlock the **CHARGER SCHEDULE** section. This reads up to six configured charging sessions directly from Hypervolt's schedule entities and displays each one with:
+
+- Scheduled days and time window
+- Estimated charging cost using the published Agile rates for that session window
+- A **⚡ Charging now** live row when a session is active, showing kWh used, cost so far, and estimated total
+
+For sessions that cross midnight (e.g. 22:00–02:00), also configure `entity_previous_day_rates` so the pre-midnight rate slots are available for an accurate live cost estimate.
 
 ---
 

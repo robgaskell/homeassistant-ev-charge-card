@@ -6,13 +6,15 @@
  *
  * Config (in dashboard YAML):
  *   type: custom:ev-charge-card
- *   entity_current_day_rates: event.octopus_energy_electricity_XXXXX_current_day_rates   # required
- *   entity_next_day_rates: event.octopus_energy_electricity_XXXXX_next_day_rates         # optional, available after ~4pm
+ *   entity_current_day_rates: event.octopus_energy_electricity_XXXXX_current_day_rates       # required
+ *   entity_next_day_rates: event.octopus_energy_electricity_XXXXX_next_day_rates             # optional, available after ~4pm
+ *   entity_previous_day_rates: event.octopus_energy_electricity_XXXXX_previous_day_rates     # optional, needed for live cost accuracy on midnight-crossing sessions
  *   entity_current_soc: sensor.my_ev_battery_soc                                         # optional
  *   entity_target_soc: sensor.my_ev_target_soc                                           # optional
  *   entity_plug_state: sensor.my_ev_plug_state                                           # optional
  *   entity_greenness_forecast: sensor.octopus_energy_a_xxxxx_greenness_forecast_current_index  # optional
  *   charger_kw: 3.7                       # optional, default 3.7
+ *   charger_integration: hypervolt        # optional, enables CHARGER SCHEDULE section
  *   split_threshold: 1.0                  # optional, default 1.0 p/kWh
  *   min_per_pct: 13.5                     # optional, default 13.5 min per 1%
  *   plug_state_value: CHARGING_CABLE_LOCKED  # optional, default CHARGING_CABLE_LOCKED
@@ -51,7 +53,26 @@ const CARD_CSS = `
   .status-warn { color: var(--warning-color, #FF9800); padding: 4px 0; }
   .status-muted { color: var(--secondary-text-color); padding: 4px 0; }
   .gn-advice { color: var(--secondary-text-color); font-style: italic; padding: 4px 0; }
+  .charger-session { margin-bottom: 8px; }
+  .charger-session-header { color: var(--secondary-text-color); font-size: 0.9em; margin: 4px 0 6px; }
+  .charger-session-row {
+    display: grid; grid-template-columns: 72px 1fr auto auto;
+    gap: 8px; align-items: center; margin-bottom: 4px;
+  }
+  .charger-live { color: var(--primary-color); font-style: italic; margin-bottom: 6px; }
 `;
+
+const CHARGER_INTEGRATIONS = {
+  hypervolt: {
+    daysEntity:    (n) => `text.hypervolt_schedule_session_${n}_days_of_week`,
+    startEntity:   (n) => `time.hypervolt_schedule_session_${n}_start_time`,
+    endEntity:     (n) => `time.hypervolt_schedule_session_${n}_end_time`,
+    // session_energy resets per session; _total_increasing is a lifetime odometer and must not be used here.
+    energySensors: [
+      'sensor.hypervolt_session_energy',
+    ],
+  },
+};
 
 class EvChargeCard extends HTMLElement {
   constructor() {
@@ -77,7 +98,9 @@ class EvChargeCard extends HTMLElement {
       entity_target_soc:         config.entity_target_soc         || null,
       entity_plug_state:         config.entity_plug_state         || null,
       plug_state_value:          config.plug_state_value          || 'CHARGING_CABLE_LOCKED',
-      entity_greenness_forecast: config.entity_greenness_forecast || null,
+      entity_greenness_forecast:  config.entity_greenness_forecast  || null,
+      entity_previous_day_rates:  config.entity_previous_day_rates  || null,
+      charger_integration:        config.charger_integration        || null,
     };
   }
 
@@ -112,7 +135,7 @@ class EvChargeCard extends HTMLElement {
   // ── Data fetching ─────────────────────────────────────────────────────────
 
   _readRates() {
-    const { entity_current_day_rates, entity_next_day_rates } = this._config;
+    const { entity_current_day_rates, entity_next_day_rates, entity_previous_day_rates } = this._config;
 
     const normalise = (raw) =>
       (raw ?? [])
@@ -123,6 +146,10 @@ class EvChargeCard extends HTMLElement {
           price:     Number(r.value_inc_vat) * 100,
         }));
 
+    const previousRates = entity_previous_day_rates
+      ? normalise(this._hass.states[entity_previous_day_rates]?.attributes?.rates)
+      : [];
+
     const todayRates = normalise(
       this._hass.states[entity_current_day_rates]?.attributes?.rates
     );
@@ -131,7 +158,7 @@ class EvChargeCard extends HTMLElement {
       ? normalise(this._hass.states[entity_next_day_rates]?.attributes?.rates)
       : [];
 
-    const combined = [...todayRates, ...tomorrowRates]
+    const combined = [...previousRates, ...todayRates, ...tomorrowRates]
       .sort((a, b) => a.validFrom - b.validFrom);
 
     // Deduplicate by validFrom timestamp in case entities overlap
@@ -150,31 +177,35 @@ class EvChargeCard extends HTMLElement {
     const { charger_kw, split_threshold } = this._config;
     const energyPerSlot = charger_kw * 0.5;
     const now    = new Date();
-    const future = rates.filter(s => s.validTo > now);
+    const future = rates.filter(slot => slot.validTo > now);
     if (future.length < slotsNeeded) return null;
 
+    // Sliding window: find the cheapest contiguous block of slotsNeeded slots.
     let bestConsec = { avg: Infinity, start: 0 };
     for (let i = 0; i <= future.length - slotsNeeded; i++) {
-      const avg = future.slice(i, i + slotsNeeded).reduce((s, r) => s + r.price, 0) / slotsNeeded;
+      const avg = future.slice(i, i + slotsNeeded).reduce((sum, slot) => sum + slot.price, 0) / slotsNeeded;
       if (avg < bestConsec.avg) bestConsec = { avg, start: i };
     }
     const consecBlock = future.slice(bestConsec.start, bestConsec.start + slotsNeeded);
 
+    // Alternative: pick the N globally cheapest slots (non-contiguous), then re-sort chronologically.
     const cheapestN = [...future].sort((a, b) => a.price - b.price).slice(0, slotsNeeded);
-    const indivAvg  = cheapestN.reduce((s, r) => s + r.price, 0) / slotsNeeded;
+    const splitAvg  = cheapestN.reduce((sum, slot) => sum + slot.price, 0) / slotsNeeded;
 
-    const useSplit = (bestConsec.avg - indivAvg) > split_threshold;
+    // Use the split (non-contiguous) strategy only if it saves more than the threshold over consecutive.
+    const useSplit = (bestConsec.avg - splitAvg) > split_threshold;
     const selected = useSplit
       ? [...cheapestN].sort((a, b) => a.validFrom - b.validFrom)
       : consecBlock;
 
+    // Collect the slots between the first and last selected that were skipped — shown as warnings.
     let skipped = [];
     if (useSplit && selected.length > 1) {
       const rangeStart    = selected[0].validFrom;
       const rangeEnd      = selected[selected.length - 1].validTo;
-      const selectedTimes = new Set(selected.map(s => s.validFrom.getTime()));
+      const selectedTimes = new Set(selected.map(slot => slot.validFrom.getTime()));
       skipped = future.filter(
-        s => s.validFrom >= rangeStart && s.validTo <= rangeEnd && !selectedTimes.has(s.validFrom.getTime()),
+        slot => slot.validFrom >= rangeStart && slot.validTo <= rangeEnd && !selectedTimes.has(slot.validFrom.getTime()),
       );
     }
 
@@ -182,8 +213,8 @@ class EvChargeCard extends HTMLElement {
       runs:        _groupIntoRuns(selected),
       skippedRuns: _groupIntoRuns(skipped),
       useSplit,
-      totalCost:  selected.reduce((sum, s) => sum + s.price * energyPerSlot, 0) / 100,
-      consecCost: consecBlock.reduce((sum, s) => sum + s.price * energyPerSlot, 0) / 100,
+      totalCost:  selected.reduce((sum, slot) => sum + slot.price * energyPerSlot, 0) / 100,
+      consecCost: consecBlock.reduce((sum, slot) => sum + slot.price * energyPerSlot, 0) / 100,
     };
   }
 
@@ -243,6 +274,11 @@ class EvChargeCard extends HTMLElement {
     if (advice) {
       content.appendChild(_hr());
       content.appendChild(advice);
+    }
+    const chargerSessions = _readChargerSessions(this._hass, rates, this._config);
+    if (chargerSessions.length > 0) {
+      content.appendChild(_hr());
+      content.appendChild(this._buildChargerScheduleSection(chargerSessions));
     }
     card.appendChild(content);
     this.shadowRoot.appendChild(card);
@@ -308,9 +344,9 @@ class EvChargeCard extends HTMLElement {
       prevDateLabel = _fmtSlotDate(run[0].validFrom);
     });
 
-    skippedRuns.forEach(grp => {
+    skippedRuns.forEach(run => {
       const row = _el('div', 'skipped');
-      row.textContent = `⚠ Skipped ${_fmtTime(grp[0].validFrom)}–${_fmtTime(grp[grp.length - 1].validTo)} @ ${_avgPrice(grp).toFixed(1)}p`;
+      row.textContent = `⚠ Skipped ${_fmtTime(run[0].validFrom)}–${_fmtTime(run[run.length - 1].validTo)} @ ${_avgPrice(run).toFixed(1)}p`;
       container.appendChild(row);
     });
 
@@ -332,7 +368,7 @@ class EvChargeCard extends HTMLElement {
     const { charger_kw } = this._config;
     const runStart  = run[0].validFrom;
     const runEnd    = run[run.length - 1].validTo;
-    const runCost   = run.reduce((s, r) => s + r.price * charger_kw * 0.5, 0) / 100;
+    const runCost   = run.reduce((sum, slot) => sum + slot.price * charger_kw * 0.5, 0) / 100;
     const dateLabel = _fmtSlotDate(runStart);
 
     const row = _el('div', 'run');
@@ -380,20 +416,96 @@ class EvChargeCard extends HTMLElement {
     return null;
   }
 
+  _buildChargerScheduleSection(sessions) {
+    const section = _el('div', '');
+
+    const title = _el('div', 'section-title');
+    title.textContent = 'CHARGER SCHEDULE';
+    section.appendChild(title);
+
+    sessions.forEach((sess, i) => {
+      if (i > 0) section.appendChild(_hr());
+
+      const sessDiv = _el('div', 'charger-session');
+
+      const header = _el('div', 'charger-session-header');
+      header.textContent = sess.header;
+      sessDiv.appendChild(header);
+
+      if (sess.liveRow) {
+        const live = _el('div', 'charger-live');
+        live.textContent = `⚡ Charging now · ${sess.liveRow.kwh.toFixed(1)} kWh · £${sess.liveRow.costSoFar.toFixed(2)} so far (est. £${sess.liveRow.estTotal.toFixed(2)} total)`;
+        sessDiv.appendChild(live);
+      }
+
+      for (const row of sess.pricingRows) {
+        if (row.unknown) {
+          const unknownEl = _el('div', 'status-muted');
+          unknownEl.textContent = row.timeRange
+            ? `${row.label} · ${row.timeRange} · Price not published`
+            : `Not scheduled today or tomorrow`;
+          sessDiv.appendChild(unknownEl);
+        } else {
+          const priceRow = _el('div', 'charger-session-row');
+
+          const dateEl = _el('span', 'run-date');
+          dateEl.textContent = row.label;
+          priceRow.appendChild(dateEl);
+
+          const timeEl = _el('span', 'run-time');
+          timeEl.textContent = row.timeRange;
+          priceRow.appendChild(timeEl);
+
+          const priceEl = _el('span', 'run-price');
+          priceEl.textContent = `${row.avgPrice.toFixed(1)}p avg`;
+          priceRow.appendChild(priceEl);
+
+          const costEl = _el('span', 'run-cost');
+          costEl.textContent = `£${row.totalCost.toFixed(2)}`;
+          priceRow.appendChild(costEl);
+
+          sessDiv.appendChild(priceRow);
+        }
+      }
+
+      section.appendChild(sessDiv);
+    });
+
+    return section;
+  }
+
   // ── State change detection ────────────────────────────────────────────────
 
   _stateKey(hass) {
     const { entity_current_day_rates, entity_next_day_rates,
             entity_current_soc, entity_target_soc,
-            entity_plug_state, entity_greenness_forecast } = this._config;
-    return [
+            entity_plug_state, entity_greenness_forecast,
+            charger_integration } = this._config;
+
+    const { entity_previous_day_rates } = this._config;
+
+    const parts = [
       hass.states[entity_current_day_rates]?.last_changed,
       entity_next_day_rates     ? hass.states[entity_next_day_rates]?.last_changed     : '',
+      entity_previous_day_rates ? hass.states[entity_previous_day_rates]?.last_changed : '',
       entity_current_soc        ? hass.states[entity_current_soc]?.state               : '',
       entity_target_soc         ? hass.states[entity_target_soc]?.state                : '',
       entity_plug_state         ? hass.states[entity_plug_state]?.state                : '',
       entity_greenness_forecast ? hass.states[entity_greenness_forecast]?.last_changed : '',
-    ].join('|');
+    ];
+
+    const defn = charger_integration && CHARGER_INTEGRATIONS[charger_integration];
+    if (defn) {
+      for (let n = 1; n <= 6; n++) {
+        parts.push(hass.states[defn.daysEntity(n)]?.state  ?? '');
+        parts.push(hass.states[defn.startEntity(n)]?.state ?? '');
+        parts.push(hass.states[defn.endEntity(n)]?.state   ?? '');
+      }
+      for (const id of defn.energySensors)
+        parts.push(hass.states[id]?.state ?? '');
+    }
+
+    return parts.join('|');
   }
 }
 
@@ -410,7 +522,8 @@ function _hr() {
 }
 
 function _avgPrice(slots) {
-  return slots.reduce((s, r) => s + r.price, 0) / slots.length;
+  if (!slots.length) return 0;
+  return slots.reduce((sum, slot) => sum + slot.price, 0) / slots.length;
 }
 
 function _groupIntoRuns(slots) {
@@ -418,6 +531,7 @@ function _groupIntoRuns(slots) {
   const runs = [];
   let current = [slots[0]];
   for (let i = 1; i < slots.length; i++) {
+    // A gap > 60 s between consecutive slots means they are non-adjacent — start a new run.
     if (slots[i].validFrom - slots[i - 1].validTo > 60_000) {
       runs.push(current);
       current = [slots[i]];
@@ -448,11 +562,201 @@ function _fmtSlotDate(date) {
 }
 
 function _fmtDuration(minutes) {
-  const h = Math.floor(minutes / 60);
-  const m = Math.round(minutes % 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  const hours = Math.floor(minutes / 60);
+  const mins  = Math.round(minutes % 60);
+  return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
 }
 
+function _fmtDayRange(days) {
+  const ORDER = ['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'];
+  const SHORT  = { MONDAY:'Mon', TUESDAY:'Tue', WEDNESDAY:'Wed', THURSDAY:'Thu', FRIDAY:'Fri', SATURDAY:'Sat', SUNDAY:'Sun' };
+  const sorted      = [...days].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
+  const dayIndices  = sorted.map(day => ORDER.indexOf(day));
+  // Consecutive if every day index is exactly one after the previous (e.g. Mon–Fri).
+  const isConsecutive = sorted.length > 1 && dayIndices.every((idx, i) => i === 0 || idx === dayIndices[i - 1] + 1);
+  if (sorted.length === 1) return SHORT[sorted[0]] || sorted[0];
+  if (isConsecutive) return `${SHORT[sorted[0]]}–${SHORT[sorted[sorted.length - 1]]}`;
+  return sorted.map(day => SHORT[day] || day).join(', ');
+}
+
+function _readChargerSessions(hass, rates, config, now = new Date()) {
+  const integration = config.charger_integration;
+  if (!integration || !CHARGER_INTEGRATIONS[integration]) return [];
+
+  const defn      = CHARGER_INTEGRATIONS[integration];
+  const chargerKw = config.charger_kw || 3.7;
+
+  const DAY_NAMES    = ['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY'];
+  const todayDate    = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayDate  = new Date(todayDate.getTime() - 86_400_000);
+  const tomorrowDate   = new Date(todayDate.getTime() + 86_400_000);
+  const todayName    = DAY_NAMES[todayDate.getDay()];
+  const yesterdayName  = DAY_NAMES[yesterdayDate.getDay()];
+  const tomorrowName = DAY_NAMES[tomorrowDate.getDay()];
+
+  const parseTime = timeStr => { const [hours, minutes] = timeStr.split(':').map(Number); return { hours, minutes }; };
+
+  const sessionBounds = (base, start, end) => {
+    const sessStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), start.hours, start.minutes);
+    const sessEnd   = new Date(base.getFullYear(), base.getMonth(), base.getDate(), end.hours,   end.minutes);
+    // Advance end by one day for midnight-crossing sessions where end ≤ start (e.g. 23:00–01:00).
+    if (sessEnd.getTime() <= sessStart.getTime()) sessEnd.setDate(sessEnd.getDate() + 1);
+    return [sessStart, sessEnd];
+  };
+
+  const buildSegments = (sessStart, sessEnd) => {
+    const slots = rates.filter(r => r.validFrom < sessEnd && r.validTo > sessStart);
+
+    if (!slots.length) return [{ unknown: true, start: sessStart, end: sessEnd, slots: [] }];
+
+    // Walk a cursor through the session window, inserting unknown gaps where no rate slots exist.
+    const segs   = [];
+    let   cursor = sessStart.getTime();
+
+    for (const slot of slots) {
+      if (cursor < slot.validFrom.getTime())
+        segs.push({ unknown: true, start: new Date(cursor), end: new Date(slot.validFrom.getTime()), slots: [] });
+
+      // Clamp slot to the session window (it may extend beyond sessStart/sessEnd).
+      const segStart = new Date(Math.max(slot.validFrom.getTime(), sessStart.getTime()));
+      const segEnd   = new Date(Math.min(slot.validTo.getTime(),   sessEnd.getTime()));
+
+      // Merge into the previous known segment if this slot is directly consecutive.
+      const prev = segs[segs.length - 1];
+      if (prev && !prev.unknown && prev.end.getTime() === segStart.getTime()) {
+        prev.end = segEnd;
+        prev.slots.push(slot);
+      } else {
+        segs.push({ unknown: false, start: segStart, end: segEnd, slots: [slot] });
+      }
+      cursor = segEnd.getTime();
+    }
+
+    // Trailing gap: rates don't reach the end of the session window.
+    if (cursor < sessEnd.getTime())
+      segs.push({ unknown: true, start: new Date(cursor), end: new Date(sessEnd.getTime()), slots: [] });
+
+    return segs;
+  };
+
+  const sessions = [];
+
+  for (let sessionNum = 1; sessionNum <= 6; sessionNum++) {
+    const daysState  = hass.states[defn.daysEntity(sessionNum)]?.state;
+    const startState = hass.states[defn.startEntity(sessionNum)]?.state;
+    const endState   = hass.states[defn.endEntity(sessionNum)]?.state;
+
+    const invalid = v => !v || v === 'unknown' || v === 'unavailable' || v.trim() === '';
+    if (invalid(daysState) || invalid(startState) || invalid(endState)) continue;
+
+    const days  = daysState.split(',').map(day => day.trim().toUpperCase());
+    const start = parseTime(startState);
+    const end   = parseTime(endState);
+
+    const pricingRows = [];
+    let todaySessStart = null, todaySessEnd = null, todaySegs = null;
+
+    for (const [dayName, baseDate] of [[todayName, todayDate], [tomorrowName, tomorrowDate]]) {
+      if (!days.includes(dayName)) continue;
+
+      const [sessStart, sessEnd] = sessionBounds(baseDate, start, end);
+      const segs = buildSegments(sessStart, sessEnd);
+      if (dayName === todayName) { todaySessStart = sessStart; todaySessEnd = sessEnd; todaySegs = segs; }
+
+      for (const seg of segs) {
+        if (seg.unknown) {
+          pricingRows.push({
+            label:     _fmtSlotDate(seg.start),
+            timeRange: `${_fmtTime(seg.start)}–${_fmtTime(seg.end)}`,
+            unknown:   true,
+          });
+        } else {
+          // Accumulate cost and a time-weighted price sum (duration-accurate average, not slot-count average).
+          let totalCost = 0, weightedPriceSum = 0, totalDurationMs = 0;
+          for (const slot of seg.slots) {
+            const slotStart   = Math.max(slot.validFrom.getTime(), seg.start.getTime());
+            const slotEnd     = Math.min(slot.validTo.getTime(),   seg.end.getTime());
+            const durationMs  = slotEnd - slotStart;
+            totalCost        += chargerKw * (durationMs / 3_600_000) * slot.price / 100;
+            weightedPriceSum += slot.price * durationMs;
+            totalDurationMs  += durationMs;
+          }
+          const avgPrice = totalDurationMs > 0 ? weightedPriceSum / totalDurationMs : 0;
+          pricingRows.push({
+            label:     _fmtSlotDate(seg.start),
+            timeRange: `${_fmtTime(seg.start)}–${_fmtTime(seg.end)}`,
+            avgPrice,
+            totalCost,
+            unknown:   false,
+          });
+        }
+      }
+    }
+
+    if (!pricingRows.length)
+      pricingRows.push({ timeRange: null, unknown: true });
+
+    // Determine the active session window for live cost tracking.
+    // For midnight-crossing sessions (end clock-time ≤ start clock-time, e.g. 22:00–02:00),
+    // after midnight todaySessStart is 22:00 tonight (future), so the normal check fails.
+    // Instead, re-derive bounds from yesterday's date: sessStart = 22:00 yesterday,
+    // sessEnd = 02:00 today. entity_previous_day_rates (if configured) supplies the
+    // pre-midnight rate slots; without it, that portion shows as unknown and is omitted.
+    let liveSessStart = todaySessStart;
+    let liveSessEnd   = todaySessEnd;
+    let liveSegs      = todaySegs;
+
+    const isMidnightCrossing = (end.hours * 60 + end.minutes) <= (start.hours * 60 + start.minutes);
+    if (isMidnightCrossing && days.includes(yesterdayName)) {
+      const [crossStart, crossEnd] = sessionBounds(yesterdayDate, start, end);
+      if (now >= crossStart && now < crossEnd) {
+        liveSessStart = crossStart;
+        liveSessEnd   = crossEnd;
+        liveSegs      = buildSegments(crossStart, crossEnd);
+      }
+    }
+
+    let liveRow = null;
+    if (liveSessStart && now >= liveSessStart && now < liveSessEnd) {
+      const energyId    = defn.energySensors.find(id => hass.states[id]);
+      const rawEnergy   = energyId ? (parseFloat(hass.states[energyId].state) || 0) : 0;
+      const energyUnit  = energyId ? (hass.states[energyId].attributes?.unit_of_measurement ?? 'kWh') : 'kWh';
+      const actualKwh   = energyUnit === 'Wh' ? rawEnergy / 1000 : rawEnergy;
+      const elapsedHours = (now.getTime() - liveSessStart.getTime()) / 3_600_000;
+      // Derive actual draw rate from energy used so far; fall back to rated power if no valid reading yet.
+      const actualPower = (elapsedHours > 0 && actualKwh > 0) ? actualKwh / elapsedHours : chargerKw;
+
+      let costSoFar = 0, estRemaining = 0;
+
+      for (const seg of liveSegs) {
+        if (seg.unknown) continue;
+        for (const slot of seg.slots) {
+          const slotStart = Math.max(slot.validFrom.getTime(), seg.start.getTime());
+          const slotEnd   = Math.min(slot.validTo.getTime(),   seg.end.getTime());
+          // Slot fully elapsed: cost at actual power; fully future: estimate at rated power;
+          // straddles now: split the slot at the current timestamp.
+          if (slotEnd <= now.getTime()) {
+            costSoFar    += actualPower * ((slotEnd - slotStart) / 3_600_000) * slot.price / 100;
+          } else if (slotStart >= now.getTime()) {
+            estRemaining += chargerKw   * ((slotEnd - slotStart) / 3_600_000) * slot.price / 100;
+          } else {
+            costSoFar    += actualPower * ((now.getTime() - slotStart) / 3_600_000) * slot.price / 100;
+            estRemaining += chargerKw   * ((slotEnd - now.getTime()) / 3_600_000) * slot.price / 100;
+          }
+        }
+      }
+      liveRow = { kwh: actualKwh, costSoFar, estTotal: costSoFar + estRemaining };
+    }
+
+    sessions.push({
+      header: `${_fmtDayRange(days)} · ${String(start.hours).padStart(2,'0')}:${String(start.minutes).padStart(2,'0')} – ${String(end.hours).padStart(2,'0')}:${String(end.minutes).padStart(2,'0')}`,
+      pricingRows,
+      liveRow,
+    });
+  }
+
+  return sessions;
+}
 
 if (!customElements.get('ev-charge-card')) {
   customElements.define('ev-charge-card', EvChargeCard);
