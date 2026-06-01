@@ -14,9 +14,10 @@
  *   entity_plug_state: sensor.my_ev_plug_state                                           # optional
  *   entity_greenness_forecast: sensor.octopus_energy_a_xxxxx_greenness_forecast_current_index  # optional
  *   charger_kw: 3.7                       # optional, default 3.7
+ *   battery_capacity_kwh: 67             # optional; if set, min_per_pct is derived automatically from charger_kw
  *   charger_integration: hypervolt        # optional, enables CHARGER SCHEDULE section
  *   split_threshold: 1.0                  # optional, default 1.0 p/kWh
- *   min_per_pct: 13.5                     # optional, default 13.5 min per 1%
+ *   min_per_pct: 13.5                     # optional, default 13.5; ignored when battery_capacity_kwh is set
  *   plug_state_value: CHARGING_CABLE_LOCKED  # optional, default CHARGING_CABLE_LOCKED
  */
 
@@ -91,9 +92,10 @@ class EvChargeCard extends HTMLElement {
     this._config = {
       entity_current_day_rates:  config.entity_current_day_rates,
       entity_next_day_rates:     config.entity_next_day_rates     || null,
-      charger_kw:                Number(config.charger_kw)        || 3.7,
-      split_threshold:           Number(config.split_threshold)   || 1.0,
-      min_per_pct:               Number(config.min_per_pct)       || 13.5,
+      charger_kw:                Number(config.charger_kw)             || 3.7,
+      battery_capacity_kwh:      Number(config.battery_capacity_kwh)   || null,
+      split_threshold:           Number(config.split_threshold)         || 1.0,
+      min_per_pct:               Number(config.min_per_pct)             || 13.5,
       entity_current_soc:        config.entity_current_soc        || null,
       entity_target_soc:         config.entity_target_soc         || null,
       entity_plug_state:         config.entity_plug_state         || null,
@@ -127,6 +129,7 @@ class EvChargeCard extends HTMLElement {
       plug_state_value:          'CHARGING_CABLE_LOCKED',
       entity_greenness_forecast: 'sensor.octopus_energy_a_XXXX_greenness_forecast_current_index',
       charger_kw:                3.7,
+      battery_capacity_kwh:      null,
       split_threshold:           1.0,
       min_per_pct:               13.5,
     };
@@ -224,7 +227,13 @@ class EvChargeCard extends HTMLElement {
     if (!this._config || !this._hass) return;
 
     const { entity_current_day_rates, entity_current_soc, entity_target_soc,
-            entity_plug_state, plug_state_value, entity_greenness_forecast, charger_kw, min_per_pct } = this._config;
+            entity_plug_state, plug_state_value, entity_greenness_forecast,
+            charger_kw, battery_capacity_kwh } = this._config;
+    // Derive min_per_pct from battery capacity and charger power when available,
+    // so slot count scales correctly if charger_kw changes.
+    const min_per_pct = battery_capacity_kwh
+      ? (battery_capacity_kwh / charger_kw) * 60 / 100
+      : this._config.min_per_pct;
 
     const rates = this._readRates();
 
