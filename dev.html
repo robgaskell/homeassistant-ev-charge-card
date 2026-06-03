@@ -81,6 +81,16 @@
 </div>
 
 <div class="scenario">
+  <div class="scenario-label">Agile Predict — plunge forecast in 3 days, high SoC</div>
+  <ev-charge-card id="card-predict-plunge"></ev-charge-card>
+</div>
+
+<div class="scenario">
+  <div class="scenario-label">Agile Predict — no plunge, tonight competitive</div>
+  <ev-charge-card id="card-predict-normal"></ev-charge-card>
+</div>
+
+<div class="scenario">
   <div class="scenario-label">Hypervolt – full coverage (active session + split)</div>
   <ev-charge-card id="card-hv-full"></ev-charge-card>
 </div>
@@ -133,6 +143,46 @@
     return rates;
   }
 
+  // ── Agile Predict generator ──────────────────────────────────────────────────
+  // Generates realistic predicted prices with optional plunge window.
+  // plungeDay: 0-indexed day offset on which midday slots go negative (omit for no plunge).
+  function generateAgilePredict(days = 10, plungeDay) {
+    const now = new Date();
+    // Snap to the next 30-min boundary
+    const start = new Date(now);
+    start.setMinutes(start.getMinutes() < 30 ? 30 : 60, 0, 0);
+
+    const prices = [];
+    const totalSlots = days * 48;
+    for (let i = 0; i < totalSlots; i++) {
+      const dt  = new Date(start.getTime() + i * 30 * 60_000);
+      const h   = dt.getHours();
+      const day = Math.floor(i / 48);
+
+      let base;
+      if (plungeDay !== undefined && day === plungeDay && h >= 11 && h < 15) {
+        // Midday plunge window
+        base = -4 + Math.sin(i * 1.2) * 3;
+      } else if (h >= 22 || h < 8) {
+        base = 14 + Math.sin(i * 0.3) * 3;   // overnight 11–17p
+      } else if (h >= 16 && h < 20) {
+        base = 30 + Math.sin(i * 0.5) * 5;   // evening peak 25–35p
+      } else {
+        base = 18 + Math.sin(i * 0.4) * 4;   // daytime 14–22p
+      }
+
+      const pred   = parseFloat(base.toFixed(2));
+      const spread = Math.max(1, Math.abs(pred) * 0.15);
+      prices.push({
+        date_time:  dt.toISOString(),
+        agile_pred: pred,
+        agile_low:  parseFloat((pred - spread).toFixed(2)),
+        agile_high: parseFloat((pred + spread).toFixed(2)),
+      });
+    }
+    return prices;
+  }
+
   // ── Greenness forecast generator ─────────────────────────────────────────────
   function generateForecast(tonightScore) {
     const scores = [tonightScore, 55, 72, 38, 65, 48, 80];
@@ -156,20 +206,27 @@
   const tomorrowRates = generateRates(tomorrowMidnight);
 
   // ── Shared hass builders ─────────────────────────────────────────────────────
-  function makeHass({ currentSoc, targetSoc, plugState, tonightScore }) {
+  function makeHass({ currentSoc, targetSoc, plugState, tonightScore, agilePredict }) {
     const h = {
       states: {
         'event.rates_today':    { attributes: { rates: todayRates },    last_changed: '2026-04-18T04:00:00Z' },
         'event.rates_tomorrow': { attributes: { rates: tomorrowRates }, last_changed: '2026-04-18T16:05:00Z' },
       },
     };
-    if (currentSoc  !== undefined) h.states['sensor.ev_soc']    = { state: String(currentSoc) };
-    if (targetSoc   !== undefined) h.states['sensor.ev_target'] = { state: String(targetSoc) };
-    if (plugState   !== undefined) h.states['sensor.ev_plug']   = { state: plugState };
+    if (currentSoc   !== undefined) h.states['sensor.ev_soc']    = { state: String(currentSoc) };
+    if (targetSoc    !== undefined) h.states['sensor.ev_target'] = { state: String(targetSoc) };
+    if (plugState    !== undefined) h.states['sensor.ev_plug']   = { state: plugState };
     if (tonightScore !== undefined) {
       h.states['sensor.greenness'] = {
         attributes: { forecast: generateForecast(tonightScore) },
         last_changed: '2026-04-18T06:00:00Z',
+      };
+    }
+    if (agilePredict !== undefined) {
+      h.states['sensor.agile_predict'] = {
+        state: 'Agile Predict',
+        attributes: { prices: agilePredict },
+        last_changed: new Date().toISOString(),
       };
     }
     return h;
@@ -183,12 +240,12 @@
     entity_current_soc:        'sensor.ev_soc',
     entity_target_soc:         'sensor.ev_target',
     entity_plug_state:         'sensor.ev_plug',
-    entity_greenness_forecast: 'sensor.greenness',
+    entity_agile_predict:      'sensor.agile_predict',
     charger_kw:                7.4,
     split_threshold:           1.0,
     min_per_pct:               13.5,
   });
-  cardFull.hass = makeHass({ currentSoc: 42, targetSoc: 80, plugState: 'CHARGING_CABLE_LOCKED', tonightScore: 78 });
+  cardFull.hass = makeHass({ currentSoc: 42, targetSoc: 80, plugState: 'CHARGING_CABLE_LOCKED', agilePredict: generateAgilePredict(10) });
 
   // ── Card: minimal (rates only, defaults for everything else) ─────────────────
   const cardMinimal = document.getElementById('card-minimal');
@@ -221,6 +278,44 @@
     charger_kw:                3.7,
   });
   cardLowGreen.hass = makeHass({ currentSoc: 20, targetSoc: 80, plugState: 'not_connected', tonightScore: 25 });
+
+  // ── Card: Agile Predict — plunge in 3 days, high SoC ────────────────────────
+  const cardPredictPlunge = document.getElementById('card-predict-plunge');
+  cardPredictPlunge.setConfig({
+    entity_current_day_rates: 'event.rates_today',
+    entity_next_day_rates:    'event.rates_tomorrow',
+    entity_current_soc:       'sensor.ev_soc',
+    entity_target_soc:        'sensor.ev_target',
+    entity_plug_state:        'sensor.ev_plug',
+    entity_agile_predict:     'sensor.agile_predict',
+    charger_kw:               7.4,
+    battery_capacity_kwh:     67,
+  });
+  cardPredictPlunge.hass = makeHass({
+    currentSoc:   65,
+    targetSoc:    80,
+    plugState:    'CHARGING_CABLE_LOCKED',
+    agilePredict: generateAgilePredict(10, 3),  // plunge on day 3
+  });
+
+  // ── Card: Agile Predict — no plunge, tonight competitive ─────────────────────
+  const cardPredictNormal = document.getElementById('card-predict-normal');
+  cardPredictNormal.setConfig({
+    entity_current_day_rates: 'event.rates_today',
+    entity_next_day_rates:    'event.rates_tomorrow',
+    entity_current_soc:       'sensor.ev_soc',
+    entity_target_soc:        'sensor.ev_target',
+    entity_plug_state:        'sensor.ev_plug',
+    entity_agile_predict:     'sensor.agile_predict',
+    charger_kw:               7.4,
+    battery_capacity_kwh:     67,
+  });
+  cardPredictNormal.hass = makeHass({
+    currentSoc:   30,
+    targetSoc:    80,
+    plugState:    'CHARGING_CABLE_LOCKED',
+    agilePredict: generateAgilePredict(10),  // no plunge
+  });
 
   // ── Card: Hypervolt – full coverage ──────────────────────────────────────────
   // Session 1: Mon–Fri 09:00–21:00   (wide window so live row always shows on weekdays)
