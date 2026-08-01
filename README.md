@@ -1,8 +1,8 @@
 # EV Charge Planner Card
 
-A [Home Assistant](https://www.home-assistant.io/) Lovelace card that plans your EV charging schedule using [Octopus Agile](https://octopus.energy/agile/) half-hourly rates and [Greener Nights](https://octopus.energy/greener-nights/) carbon intensity forecasts.
+A [Home Assistant](https://www.home-assistant.io/) Lovelace card that plans your EV charging schedule using [Octopus Agile](https://octopus.energy/agile/) half-hourly rates.
 
-It reads live electricity prices from the [Octopus Energy integration](https://github.com/BottlecapDave/HomeAssistant-OctopusEnergy), calculates exactly how many 30-minute slots your car needs, and picks the cheapest window — either as a single consecutive block or split across multiple cheaper periods. It also shows Octopus's Greener Nights carbon intensity forecast so you can choose a cleaner night to charge if price isn't the only priority.
+It reads live electricity prices from the [Octopus Energy integration](https://github.com/BottlecapDave/HomeAssistant-OctopusEnergy), calculates exactly how many 30-minute slots your car needs, and picks the cheapest window — either as a single consecutive block or split across multiple cheaper periods. With an optional [Agile Predict](https://agilepredict.com/) sensor it also forecasts upcoming price plunges and cheaper windows beyond the published rates.
 
 The card reads all data directly from Home Assistant sensor entities — battery state, target SoC, plug state, and electricity rates. All scheduling runs in the browser with no server-side processing and no external API calls.
 
@@ -49,7 +49,6 @@ entity_next_day_rates: event.octopus_energy_electricity_XXXXX_next_day_rates
 entity_current_soc: sensor.my_ev_battery_soc
 entity_target_soc: sensor.my_ev_target_soc
 entity_plug_state: sensor.my_ev_plug_state
-entity_greenness_forecast: sensor.octopus_energy_a_xxxx_greenness_forecast_current_index
 ```
 
 Replace the `XXXXX` placeholders with your meter's MPAN and serial number. You can find the exact entity names in **Settings → Devices & Services → Octopus Energy → Entities**.
@@ -65,11 +64,12 @@ Replace the `XXXXX` placeholders with your meter's MPAN and serial number. You c
 | `entity_target_soc` | _(optional)_ | Target SoC sensor entity ID |
 | `entity_plug_state` | _(optional)_ | Plug state sensor entity ID |
 | `plug_state_value` | `CHARGING_CABLE_LOCKED` | State value that means the car is plugged in |
-| `entity_greenness_forecast` | _(optional)_ | Greenness forecast sensor entity ID |
+| `entity_agile_predict` | _(optional)_ | Agile Predict sensor entity ID — enables the PRICE OUTLOOK section |
 | `charger_integration` | _(optional)_ | Charger brand integration — enables the CHARGER SCHEDULE section. Supported value: `hypervolt` |
 | `charger_kw` | `3.7` | Charger output in kW |
+| `battery_capacity_kwh` | _(optional)_ | Battery capacity in kWh — when set, `min_per_pct` is derived from this and `charger_kw` |
 | `split_threshold` | `1.0` | Minimum p/kWh saving to justify non-consecutive slots |
-| `min_per_pct` | `13.5` | Minutes of charging time per 1% SoC increase |
+| `min_per_pct` | `13.5` | Minutes of charging time per 1% SoC increase. Ignored when `battery_capacity_kwh` is set |
 
 ### Finding the rate entity names
 
@@ -82,14 +82,6 @@ event.octopus_energy_electricity_{serial}_{mpan}_previous_day_rates
 ```
 
 To find yours: go to **Settings → Devices & Services → Octopus Energy → Entities** and search for `current_day_rates`.
-
-### Enable the greenness forecast sensor
-
-The greenness forecast sensor is disabled by default in the Octopus Energy integration. To enable it:
-
-1. Go to **Settings → Devices & Services → Octopus Energy**
-2. Click your account entry, then **Entities**
-3. Find **Greenness Forecast Current Index** and enable it
 
 ### Plug state values
 
@@ -121,13 +113,15 @@ If the split strategy saves more than `split_threshold` p/kWh over consecutive, 
 
 Tomorrow's rates (via `entity_next_day_rates`) are automatically included once Octopus publishes them (usually around 4–5pm), extending the scheduling window through the following night.
 
-### Greener Nights
+### Price outlook
 
-If `entity_greenness_forecast` is configured, the card reads Octopus's carbon intensity forecast and shows an advisory message when a significantly greener night (20+ points higher score) is coming up in the next 7 days. On Agile, greener nights tend to coincide with lower prices due to higher renewable generation — the message reads:
+If `entity_agile_predict` is configured, the card reads predicted prices from [Agile Predict](https://agilepredict.com/) and shows a **PRICE OUTLOOK** section covering the period beyond the published rates. It highlights:
 
-> *Tomorrow is forecast greener (72/100) — charging may be cheaper then.*
+- **Plunge windows** — confirmed (predicted price) and possible (low estimate) periods of unusually cheap electricity
+- **SoC-aware advice** — whether to preserve capacity for an upcoming plunge, or top up first if the battery is low
+- **Cheaper windows** — the best forecast overnight window, and the best any-time window when it falls outside overnight hours
 
-The small green bar in the card header shows tonight's greenness score at a glance. No table is shown — the message only appears when there's a meaningfully better night coming.
+Forecast confidence decreases the further ahead the prediction runs, which the section notes in its subtitle. If the sensor isn't configured, the section is omitted entirely.
 
 ---
 

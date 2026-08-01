@@ -12,7 +12,6 @@
  *   entity_current_soc: sensor.my_ev_battery_soc                                         # optional
  *   entity_target_soc: sensor.my_ev_target_soc                                           # optional
  *   entity_plug_state: sensor.my_ev_plug_state                                           # optional
- *   entity_greenness_forecast: sensor.octopus_energy_a_xxxxx_greenness_forecast_current_index  # optional
  *   entity_agile_predict: sensor.agile_predict    # optional; enables PRICE OUTLOOK with predicted prices
  *   charger_kw: 3.7                       # optional, default 3.7
  *   battery_capacity_kwh: 67             # optional; if set, min_per_pct is derived automatically from charger_kw
@@ -54,7 +53,6 @@ const CARD_CSS = `
   .status-ok { color: var(--success-color, #4CAF50); font-style: italic; padding: 4px 0; }
   .status-warn { color: var(--warning-color, #FF9800); padding: 4px 0; }
   .status-muted { color: var(--secondary-text-color); padding: 4px 0; }
-  .gn-advice { color: var(--secondary-text-color); font-style: italic; padding: 4px 0; }
   .outlook-plunge   { color: var(--primary-color); font-weight: 500; padding: 2px 0; }
   .outlook-possible { color: var(--warning-color, #FF9800); padding: 2px 0; }
   .outlook-better   { color: var(--success-color, #4CAF50); padding: 2px 0; }
@@ -106,7 +104,6 @@ class EvChargeCard extends HTMLElement {
       entity_target_soc:         config.entity_target_soc         || null,
       entity_plug_state:         config.entity_plug_state         || null,
       plug_state_value:          config.plug_state_value          || 'CHARGING_CABLE_LOCKED',
-      entity_greenness_forecast:  config.entity_greenness_forecast  || null,
       entity_previous_day_rates:  config.entity_previous_day_rates  || null,
       charger_integration:        config.charger_integration        || null,
       entity_agile_predict:       config.entity_agile_predict       || null,
@@ -134,7 +131,6 @@ class EvChargeCard extends HTMLElement {
       entity_target_soc:         'sensor.my_ev_target_soc',
       entity_plug_state:         'sensor.my_ev_plug_state',
       plug_state_value:          'CHARGING_CABLE_LOCKED',
-      entity_greenness_forecast: 'sensor.octopus_energy_a_XXXX_greenness_forecast_current_index',
       entity_agile_predict:      'sensor.agile_predict',
       charger_kw:                3.7,
       battery_capacity_kwh:      null,
@@ -245,7 +241,7 @@ class EvChargeCard extends HTMLElement {
     if (!this._config || !this._hass) return;
 
     const { entity_current_day_rates, entity_current_soc, entity_target_soc,
-            entity_plug_state, plug_state_value, entity_greenness_forecast,
+            entity_plug_state, plug_state_value,
             charger_kw, battery_capacity_kwh } = this._config;
     // Derive min_per_pct from battery capacity and charger power when available,
     // so slot count scales correctly if charger_kw changes.
@@ -278,15 +274,6 @@ class EvChargeCard extends HTMLElement {
     const schedule = pctToAdd > 0 ? this._calculateSchedule(slotsNeeded, rates) : null;
     const predictPrices = this._readAgilePredict();
 
-    const now = new Date();
-    const tonightStr = now.toDateString();
-    const rawForecast = entity_greenness_forecast
-      ? (this._hass.states[entity_greenness_forecast]?.attributes?.forecast ?? [])
-      : [];
-    const forecast = rawForecast.filter(n => new Date(n.end) > now).slice(0, 7);
-    const tonightEntry = forecast.find(n => new Date(n.start).toDateString() === tonightStr);
-    const tonightScore = tonightEntry?.greenness_score ?? 0;
-
     this.shadowRoot.replaceChildren();
 
     const styleEl = document.createElement('style');
@@ -301,7 +288,7 @@ class EvChargeCard extends HTMLElement {
     content.appendChild(this._buildSummary(plan));
     content.appendChild(_hr());
     content.appendChild(this._buildScheduleSection(plan, rates, schedule));
-    const outlook = this._buildPriceOutlook(predictPrices, forecast, tonightScore, plan, schedule);
+    const outlook = this._buildPriceOutlook(predictPrices, plan, schedule);
     if (outlook) {
       content.appendChild(_hr());
       content.appendChild(outlook);
@@ -425,122 +412,105 @@ class EvChargeCard extends HTMLElement {
     return row;
   }
 
-  _buildPriceOutlook(predictPrices, forecast, tonightScore, plan, schedule) {
+  _buildPriceOutlook(predictPrices, plan, schedule) {
+    if (!predictPrices.length) return null;
+
     const { currentSoc, slotsNeeded, energyNeeded } = plan;
-    const hasPredictData = predictPrices.length > 0;
     const now = new Date();
     const items = [];
 
-    if (hasPredictData) {
-      const { confirmedPlunge, possiblePlunge, cheapestOvernightWindow, cheapestAnytimeWindow } =
-        _analyseAgilePredict(predictPrices, slotsNeeded, now);
+    const { confirmedPlunge, possiblePlunge, cheapestOvernightWindow, cheapestAnytimeWindow } =
+      _analyseAgilePredict(predictPrices, slotsNeeded, now);
 
-      for (const cluster of confirmedPlunge) {
-        const minPrice = Math.min(...cluster.slots.map(s => s.pred));
+    for (const cluster of confirmedPlunge) {
+      const minPrice = Math.min(...cluster.slots.map(s => s.pred));
+      items.push({
+        text: `⚡ Plunge forecast ${_formatDate(cluster.start)} ` +
+              `${_fmtTime(cluster.start)}–${_fmtTime(cluster.end)} (down to ${minPrice.toFixed(1)}p)`,
+        cls: 'outlook-plunge',
+      });
+    }
+
+    const cutoff48h = new Date(now.getTime() + 48 * 3_600_000);
+    for (const cluster of possiblePlunge.filter(c => c.start < cutoff48h)) {
+      const minLow = Math.min(...cluster.slots.map(s => s.low));
+      items.push({
+        text: `Possible plunge ${_formatDate(cluster.start)} ` +
+              `${_fmtTime(cluster.start)}–${_fmtTime(cluster.end)} — low estimate ${minLow.toFixed(1)}p`,
+        cls: 'outlook-possible',
+      });
+    }
+
+    // SoC-aware advice when a plunge (confirmed or possible) is within 48h
+    const nearestPlunge = confirmedPlunge[0] ?? possiblePlunge.find(c => c.start < cutoff48h);
+    if (nearestPlunge && nearestPlunge.start < cutoff48h) {
+      if (currentSoc >= 40) {
         items.push({
-          text: `⚡ Plunge forecast ${_formatDate(cluster.start)} ` +
-                `${_fmtTime(cluster.start)}–${_fmtTime(cluster.end)} (down to ${minPrice.toFixed(1)}p)`,
-          cls: 'outlook-plunge',
+          text: `Battery at ${Math.round(currentSoc)}% — consider preserving capacity for the predicted cheap window.`,
+          cls: 'outlook-info',
+        });
+      } else if (currentSoc < 25 && slotsNeeded > 0) {
+        items.push({
+          text: `Battery is low (${Math.round(currentSoc)}%) — a partial charge now is advisable before the plunge window.`,
+          cls: 'outlook-info',
         });
       }
+    }
 
-      const cutoff48h = new Date(now.getTime() + 48 * 3_600_000);
-      for (const cluster of possiblePlunge.filter(c => c.start < cutoff48h)) {
-        const minLow = Math.min(...cluster.slots.map(s => s.low));
-        items.push({
-          text: `Possible plunge ${_formatDate(cluster.start)} ` +
-                `${_fmtTime(cluster.start)}–${_fmtTime(cluster.end)} — low estimate ${minLow.toFixed(1)}p`,
-          cls: 'outlook-possible',
-        });
-      }
+    if (slotsNeeded > 0) {
+      const currentAvgPrice = (schedule && energyNeeded > 0)
+        ? (schedule.totalCost * 100) / energyNeeded
+        : null;
 
-      // SoC-aware advice when a plunge (confirmed or possible) is within 48h
-      const nearestPlunge = confirmedPlunge[0] ?? possiblePlunge.find(c => c.start < cutoff48h);
-      if (nearestPlunge && nearestPlunge.start < cutoff48h) {
-        if (currentSoc >= 40) {
+      // Overnight window
+      if (cheapestOvernightWindow) {
+        const diff = currentAvgPrice !== null ? currentAvgPrice - cheapestOvernightWindow.avgPrice : null;
+        if (diff !== null && diff > 2) {
           items.push({
-            text: `Battery at ${Math.round(currentSoc)}% — consider preserving capacity for the predicted cheap window.`,
+            text: `Better overnight window forecast: ${_formatDate(cheapestOvernightWindow.start)} ` +
+                  `${_fmtTime(cheapestOvernightWindow.start)}–${_fmtTime(cheapestOvernightWindow.end)} ` +
+                  `(~${cheapestOvernightWindow.avgPrice.toFixed(1)}p avg vs ~${currentAvgPrice.toFixed(1)}p tonight).`,
+            cls: 'outlook-better',
+          });
+        } else if (diff !== null) {
+          items.push({
+            text: `Overnight forecast: tonight's schedule (~${currentAvgPrice.toFixed(1)}p avg) looks competitive — no better night predicted.`,
             cls: 'outlook-info',
           });
-        } else if (currentSoc < 25 && slotsNeeded > 0) {
+        } else {
           items.push({
-            text: `Battery is low (${Math.round(currentSoc)}%) — a partial charge now is advisable before the plunge window.`,
+            text: `Best overnight window (forecast): ${_formatDate(cheapestOvernightWindow.start)} ` +
+                  `${_fmtTime(cheapestOvernightWindow.start)}–${_fmtTime(cheapestOvernightWindow.end)} at ~${cheapestOvernightWindow.avgPrice.toFixed(1)}p avg.`,
             cls: 'outlook-info',
           });
         }
       }
 
-      if (slotsNeeded > 0) {
-        const currentAvgPrice = (schedule && energyNeeded > 0)
-          ? (schedule.totalCost * 100) / energyNeeded
-          : null;
-
-        // Overnight window
-        if (cheapestOvernightWindow) {
-          const diff = currentAvgPrice !== null ? currentAvgPrice - cheapestOvernightWindow.avgPrice : null;
-          if (diff !== null && diff > 2) {
-            items.push({
-              text: `Better overnight window forecast: ${_formatDate(cheapestOvernightWindow.start)} ` +
-                    `${_fmtTime(cheapestOvernightWindow.start)}–${_fmtTime(cheapestOvernightWindow.end)} ` +
-                    `(~${cheapestOvernightWindow.avgPrice.toFixed(1)}p avg vs ~${currentAvgPrice.toFixed(1)}p tonight).`,
-              cls: 'outlook-better',
-            });
-          } else if (diff !== null) {
-            items.push({
-              text: `Overnight forecast: tonight's schedule (~${currentAvgPrice.toFixed(1)}p avg) looks competitive — no better night predicted.`,
-              cls: 'outlook-info',
-            });
-          } else {
-            items.push({
-              text: `Best overnight window (forecast): ${_formatDate(cheapestOvernightWindow.start)} ` +
-                    `${_fmtTime(cheapestOvernightWindow.start)}–${_fmtTime(cheapestOvernightWindow.end)} at ~${cheapestOvernightWindow.avgPrice.toFixed(1)}p avg.`,
-              cls: 'outlook-info',
-            });
-          }
+      // Any-time window — only show if it falls outside overnight hours (meaningfully different)
+      if (cheapestAnytimeWindow) {
+        const h = cheapestAnytimeWindow.start.getHours();
+        const isOvernight = _isOvernightHour(h);
+        if (!isOvernight) {
+          items.push({
+            text: `Best any-time window (forecast): ${_formatDate(cheapestAnytimeWindow.start)} ` +
+                  `${_fmtTime(cheapestAnytimeWindow.start)}–${_fmtTime(cheapestAnytimeWindow.end)} at ~${cheapestAnytimeWindow.avgPrice.toFixed(1)}p avg.`,
+            cls: cheapestOvernightWindow && cheapestAnytimeWindow.avgPrice < cheapestOvernightWindow.avgPrice - 1
+              ? 'outlook-better'
+              : 'outlook-info',
+          });
         }
-
-        // Any-time window — only show if it falls outside overnight hours (meaningfully different)
-        if (cheapestAnytimeWindow) {
-          const h = cheapestAnytimeWindow.start.getHours();
-          const isOvernight = _isOvernightHour(h);
-          if (!isOvernight) {
-            items.push({
-              text: `Best any-time window (forecast): ${_formatDate(cheapestAnytimeWindow.start)} ` +
-                    `${_fmtTime(cheapestAnytimeWindow.start)}–${_fmtTime(cheapestAnytimeWindow.end)} at ~${cheapestAnytimeWindow.avgPrice.toFixed(1)}p avg.`,
-              cls: cheapestOvernightWindow && cheapestAnytimeWindow.avgPrice < cheapestOvernightWindow.avgPrice - 1
-                ? 'outlook-better'
-                : 'outlook-info',
-            });
-          }
-        }
-      }
-    } else if (forecast.length) {
-      // Greenness fallback when no predict entity is configured
-      if (tonightScore >= 60) {
-        items.push({
-          text: 'Tonight is forecast very green — overnight rates could be lower. Consider waiting to charge tonight.',
-          cls: 'gn-advice',
-        });
-      } else if (tonightScore < 40) {
-        const betterNight = forecast.slice(1).find(n => n.greenness_score >= 60);
-        let text = "Tonight's greenness forecast is low, so waiting overnight may not save much.";
-        if (betterNight)
-          text += ` Best upcoming greenness: ${_formatDate(new Date(betterNight.start))} (${betterNight.greenness_score}/100).`;
-        items.push({ text, cls: 'gn-advice' });
       }
     }
 
     if (!items.length) return null;
 
     const container = _el('div', '');
-    if (hasPredictData) {
-      const title = _el('div', 'section-title');
-      title.textContent = 'PRICE OUTLOOK';
-      container.appendChild(title);
-      const subtitle = _el('div', 'section-subtitle');
-      subtitle.textContent = 'agilepredict.com forecast — confidence decreases further ahead';
-      container.appendChild(subtitle);
-    }
+    const title = _el('div', 'section-title');
+    title.textContent = 'PRICE OUTLOOK';
+    container.appendChild(title);
+    const subtitle = _el('div', 'section-subtitle');
+    subtitle.textContent = 'agilepredict.com forecast — confidence decreases further ahead';
+    container.appendChild(subtitle);
     for (const { text, cls } of items) {
       const el = _el('div', cls);
       el.textContent = text;
@@ -612,7 +582,7 @@ class EvChargeCard extends HTMLElement {
   _stateKey(hass) {
     const { entity_current_day_rates, entity_next_day_rates,
             entity_current_soc, entity_target_soc,
-            entity_plug_state, entity_greenness_forecast,
+            entity_plug_state,
             entity_previous_day_rates, entity_agile_predict,
             charger_integration } = this._config;
 
@@ -623,7 +593,6 @@ class EvChargeCard extends HTMLElement {
       entity_current_soc        ? hass.states[entity_current_soc]?.state               : '',
       entity_target_soc         ? hass.states[entity_target_soc]?.state                : '',
       entity_plug_state         ? hass.states[entity_plug_state]?.state                : '',
-      entity_greenness_forecast ? hass.states[entity_greenness_forecast]?.last_changed : '',
       entity_agile_predict      ? hass.states[entity_agile_predict]?.last_changed      : '',
     ];
 

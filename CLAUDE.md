@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-A single-file Home Assistant Lovelace custom card (`ev-charge-card.js`) that schedules EV charging using Octopus Agile half-hourly electricity rates and Octopus Greener Nights carbon intensity forecasts. All logic runs in the browser — no build system, no server, no external API calls.
+A single-file Home Assistant Lovelace custom card (`ev-charge-card.js`) that schedules EV charging using Octopus Agile half-hourly electricity rates, with an optional Agile Predict forecast for the period beyond the published rates. All logic runs in the browser — no build system, no server, no external API calls.
 
 Distributed via HACS (`hacs.json`) or manual copy to `config/www/`.
 
@@ -30,7 +30,7 @@ The entire card lives in one file with two sections:
 - `_readRates()` — reads `rates` attributes from up to three Octopus Energy event entities (previous day, current day, next day), normalises price from £/kWh → p/kWh (`* 100`), merges and deduplicates by `validFrom` timestamp. Previous day rates are included so midnight-crossing sessions can price their pre-midnight slots.
 - `_calculateSchedule()` — core algorithm: evaluates a *consecutive* block (sliding window) vs a *split* strategy (N cheapest slots, sorted chronologically). Uses split only when it saves more than `split_threshold` p/kWh over consecutive. Returns `runs`, `skippedRuns`, costs, and `useSplit` flag.
 - `_render()` and `_build*` methods — imperative DOM construction; `_render()` calls `shadowRoot.replaceChildren()` and rebuilds the full card on each state change.
-- `_buildGreenAdvice()` — greenness advisory: shows a message only when `tonightScore >= 60` (very green, charge tonight) or `< 40` (low, may point to a better upcoming night). The 40–59 range is intentionally silent.
+- `_readAgilePredict()` / `_buildPriceOutlook()` — reads the `prices` attribute from the Agile Predict sensor and renders the PRICE OUTLOOK section (plunge windows, SoC-aware advice, cheapest forecast windows). Both return early when no predict entity is configured, so the section is simply omitted.
 - `_buildChargerScheduleSection()` — renders the CHARGER SCHEDULE section from the array returned by `_readChargerSessions()`.
 
 **`CHARGER_INTEGRATIONS`** — module-level lookup table mapping integration names (e.g. `hypervolt`) to entity name factory functions and energy sensor IDs. Extend this to support additional charger brands.
@@ -46,7 +46,10 @@ Rate slots (after normalisation):
 
 Runs (output of `_groupIntoRuns`): consecutive slots grouped into arrays; gaps > 60 s start a new run.
 
-The `forecast` array from the greenness entity is filtered to future entries and capped at 7; `tonightScore` is matched by `toDateString()` equality.
+Predicted prices (after normalisation in `_readAgilePredict`):
+```js
+{ start: Date, pred: number, low: number, high: number }  // prices in p/kWh
+```
 
 ## Coding style
 
